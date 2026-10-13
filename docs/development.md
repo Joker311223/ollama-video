@@ -89,7 +89,7 @@ Seedance 渲染请求除了 `revision`，还需传入与当前设置一致的 `p
 
 ## 图片绑定与版本
 
-新项目 `visual_mode: true`，旧项目默认 `false`。保存角色卡或上传图片会开启图片流程。项目包含 `character`（`name`、`appearance`、可选 `image_url` / `image_asset`），镜头包含 `image_url`、`image_asset`、`image_fingerprint` 和 `image_current`。`images_ready` 由服务端派生；图片模式下必须为真才能确认并渲染。
+新项目 `visual_mode: true`，旧项目默认 `false`。保存角色卡或上传图片会开启图片流程。项目包含 `character`（`name`、`appearance`、可选 `image_url` / `image_asset`），镜头包含 `image_url`、`image_asset`、`image_fingerprint` 和 `image_current`。`images_ready` 由服务端派生；仅供展示图片准备状态，不作为确认或渲染门槛。按镜头使用有效的已确认图片，其余镜头文生视频；不删除未使用图片。
 
 上传 `data_url` 仅接受 JPEG / PNG / WebP，文件最大 8 MB，服务端验证并规范化为本地 JPEG。上传或生成后的分镜图需要显式 `/image-confirm`。角色或画面变化使相关确认失效；单纯时长改变保留图片确认，但更新视频版本。保存镜头时服务端保留图片绑定，不接受客户端伪造 `image_asset`。
 

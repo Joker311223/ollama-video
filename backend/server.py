@@ -113,7 +113,7 @@ def guard(p,body):
     if body.get('revision')!=p['revision']: raise Conflict('项目已更新，请刷新后重试')
 
 def signature(s):
-    return hashlib.sha256(json.dumps({'pipeline_version':2,**({'image_asset':s['image_asset']} if s.get('image_asset') else {}),**{k:s[k] for k in ['description','camera','prompt','negative','duration','seed']}},sort_keys=True).encode()).hexdigest()[:16]
+    return hashlib.sha256(json.dumps({'pipeline_version':2,**({'image_asset':s['image_asset']} if s.get('image_asset') and s.get('image_current',True) else {}),**{k:s[k] for k in ['description','camera','prompt','negative','duration','seed']}},sort_keys=True).encode()).hexdigest()[:16]
 
 def update(pid,**fields):
     with LOCK:
@@ -293,7 +293,7 @@ def render_job(pid):
         if not dest.exists():
             update(pid,progress={'message':'正在生成镜头（含采样和解码，可能需要数分钟）','shot_index':index+1,'shot_total':len(p['shots']),'step':None,'steps':20})
             graph=build_graph(s,pid,compiled[signature(s)])
-            if p.get('visual_mode'):
+            if s.get('image_current'):
                 image_name=upload_comfy_image(pid,s['image_asset'])
                 graph['90']={'class_type':'LoadImage','inputs':{'image':image_name}}
                 graph['55']['inputs']['start_image']=['90',0]
@@ -345,6 +345,7 @@ def cloud_record(pid,cache_key,record):
         p=load(pid);p.setdefault('cloud_tasks',{})[cache_key]=record;save(p)
 
 def cloud_task(pid,shot,p,key,index):
+    decorate_project(p)
     seedance.validate_duration(shot,p['render_config'])
     cache_key=cloud_signature(shot,p)
     record=load(pid).get('cloud_tasks',{}).get(cache_key,{})
@@ -356,7 +357,7 @@ def cloud_task(pid,shot,p,key,index):
         record={'status':'submitting','requested_duration':max(4,shot['duration'])}
         cloud_record(pid,cache_key,record)
         try:
-            response=seedance.call(key,'POST',body=seedance.payload(shot,p['render_config'],p.get('style',''),first_frame=visuals.image_data_url(directory(pid),shot['image_asset']) if p.get('visual_mode') else None))
+            response=seedance.call(key,'POST',body=seedance.payload(shot,p['render_config'],p.get('style',''),first_frame=visuals.image_data_url(directory(pid),shot['image_asset']) if shot.get('image_current') else None))
         except seedance.Rejected:
             cloud_record(pid,cache_key,{**record,'status':'rejected'})
             raise
@@ -446,10 +447,6 @@ def decorate_project(p):
                 if 'image_current' in item: item['image_current']=False
     p['images_ready']=bool(p.get('character',{}).get('image_url')) and bool(p.get('shots')) and all(x.get('image_current') for x in p.get('shots',[]))
     return p
-
-def require_images(p):
-    if p.get('visual_mode') and not decorate_project(p)['images_ready']:
-        raise Conflict('请先准备并逐张确认当前分镜图片，再生成视频。')
 
 def invalidate_approval(p):
     p.update(revision=p['revision']+1,approved_revision=None,status='draft',video_url=None,error=None)
@@ -549,7 +546,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self.origin_ok(): return self.send_json({'error':'来源无效'},403)
             path=unquote(urlparse(self.path).path)
-            if path=='/api/bootstrap': return self.send_json({'app':'jingxu-studio','api_version':4,'token':TOKEN,'projects':projects(),'preferences':seedance.public_preferences(),'settings':{'model':MODEL,'data_dir':str(DATA),'resolution':'512×288','fps':12,'max_shot_duration':30}})
+            if path=='/api/bootstrap': return self.send_json({'app':'jingxu-studio','api_version':5,'token':TOKEN,'projects':projects(),'preferences':seedance.public_preferences(),'settings':{'model':MODEL,'data_dir':str(DATA),'resolution':'512×288','fps':12,'max_shot_duration':30}})
             if path=='/api/preferences': return self.send_json(seedance.public_preferences())
             if path=='/api/projects': return self.send_json(projects())
             if path=='/api/health':
@@ -630,11 +627,9 @@ class Handler(BaseHTTPRequestHandler):
                     edited_shots=shots_valid(body.get('shots'),p,match_total=False); edited_title=text(body.get('title',p['title']),'标题',200)
                     p.update(shots=edited_shots,title=edited_title,duration=sum(shot['duration'] for shot in edited_shots)); p['revision']+=1; p.update(approved_revision=None,status='draft',video_url=None,error=None)
                 elif action=='confirm':
-                    require_images(p)
                     p['shots']=shots_valid(p['shots'],p); p.update(approved_revision=p['revision'],status='approved',error=None)
                 elif action=='render':
                     if p['approved_revision']!=p['revision']: raise Conflict('请先确认当前版本的分镜')
-                    require_images(p)
                     config=render_configuration(body)
                     if config['provider']=='seedance':
                         for shot in p['shots']: seedance.validate_duration(shot,config)

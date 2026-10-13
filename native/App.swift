@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 if let data = data, let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], json["app"] as? String == "jingxu-studio" {
-                    guard json["api_version"] as? Int == 4 else {
+                    guard json["api_version"] as? Int == 5 else {
                         self.failure("旧版后台服务仍在运行。请等待现有任务完成，并关闭旧版后台服务后再打开镜序；项目会保留。"); return
                     }
                     self.web.load(URLRequest(url: self.base)); return

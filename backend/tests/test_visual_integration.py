@@ -19,26 +19,26 @@ class Integration(unittest.TestCase):
     def upload(self,target):self.p=s.visual_action(self.p,'image-upload',{'target':target,'data_url':image_url()})
     def test_upload_confirm_and_edit_invalidation(self):
         self.upload('character');self.upload('s1')
-        with self.assertRaises(s.Conflict):s.require_images(self.p)
+        self.assertFalse(s.decorate_project(self.p)['images_ready'])
         self.p=s.visual_action(self.p,'image-confirm',{'shot_id':'s1'})
-        s.require_images(self.p)
+        self.assertTrue(s.decorate_project(self.p)['images_ready'])
         original_asset=self.p['character']['image_asset'];self.p['character']['image_asset']='img-'+'f'*64+'.jpg'
-        with self.assertRaises(s.Conflict):s.require_images(self.p)
+        self.assertFalse(s.decorate_project(self.p)['images_ready'])
         self.p['character']['image_asset']=original_asset
         changed=dict(self.p['shots'][0],duration=5,image_asset='evil',image_fingerprint='evil')
         clean=s.shots_valid([changed],self.p,match_total=False)
         self.assertEqual(clean[0]['image_asset'],self.p['shots'][0]['image_asset'])
-        self.p['shots']=clean;s.require_images(self.p)
+        self.p['shots']=clean;self.assertTrue(s.decorate_project(self.p)['images_ready'])
         self.p['shots'][0]['description']='男孩走在街上'
-        with self.assertRaises(s.Conflict):s.require_images(self.p)
-        s.visual_action(self.p,'image-confirm',{'shot_id':'s1'});s.require_images(self.p)
+        self.assertFalse(s.decorate_project(self.p)['images_ready'])
+        s.visual_action(self.p,'image-confirm',{'shot_id':'s1'});self.assertTrue(s.decorate_project(self.p)['images_ready'])
         with self.assertRaises(s.Invalid):s.visual_action(self.p,'image-confirm',{'shot_id':'character'})
     def test_character_change_and_legacy(self):
         self.upload('character');self.upload('s1');s.visual_action(self.p,'image-confirm',{'shot_id':'s1'})
         s.visual_action(self.p,'character',{'name':'男孩','appearance':'长发红衣'})
-        with self.assertRaises(s.Conflict):s.require_images(self.p)
+        self.assertFalse(s.decorate_project(self.p)['images_ready'])
         legacy={'id':self.pid,'shots':[]};s.decorate_project(legacy)
-        self.assertFalse(legacy['visual_mode']);s.require_images(legacy)
+        self.assertFalse(legacy['visual_mode']);self.assertFalse(legacy['images_ready'])
     def test_uncertain_image_not_resubmitted(self):
         model='doubao-seedream-5-0-pro-260628'
         with patch.object(s.seedance,'preferences',return_value={'seedream_model':model}),patch.object(s.seedance,'api_key',return_value='fake'),patch.object(s,'launch'):
@@ -63,6 +63,7 @@ class Integration(unittest.TestCase):
         old=hashlib.sha256(json.dumps({'pipeline_version':2,**{k:shot[k] for k in ['description','camera','prompt','negative','duration','seed']}},sort_keys=True).encode()).hexdigest()[:16]
         self.assertEqual(s.signature(shot),old)
         self.assertNotEqual(s.signature(shot),s.signature(dict(shot,image_asset='img-'+'a'*64+'.jpg')))
+        self.assertEqual(s.signature(shot),s.signature(dict(shot,image_asset='img-'+'a'*64+'.jpg',image_current=False)))
         config={'provider':'seedance','seedance_model':'model','resolution':'720p','seedream_model':'image-model'}
         with patch.object(s.seedance,'preferences',return_value=config),patch.object(s.seedance,'api_key',return_value='fake'):
             self.assertNotIn('seedream_model',s.render_configuration(config))
@@ -88,11 +89,11 @@ class Integration(unittest.TestCase):
             except HTTPError as error:
                 with error:return error.code,json.load(error)
         try:
-            with patch.object(s.seedance,'call') as paid:
-                self.assertEqual(call('confirm',{'revision':1})[0],409)
-                self.p['approved_revision']=1;s.save(self.p)
-                self.assertEqual(call('render',{'revision':1})[0],409)
-                paid.assert_not_called()
+            with patch.object(s.seedance,'call') as paid,patch.object(s,'launch') as launch,patch.object(s,'render_configuration',return_value={'provider':'local'}):
+                self.assertEqual(call('confirm',{'revision':1})[0],200)
+                self.assertEqual(call('render',{'revision':1})[0],200)
+                launch.assert_called_once();paid.assert_not_called()
+            s.save(self.p)
             requests={'character':{'name':'Boy','appearance':'blue shirt'},'image-upload':{'target':'character','data_url':image_url()},'image-generate':{'target':'character','seedream_model':'model'},'image-confirm':{'shot_id':'s1'}}
             for action,body in requests.items():
                 self.assertEqual(call(action,dict(body,revision=0))[0],409,action)
@@ -121,6 +122,24 @@ class Integration(unittest.TestCase):
         upload.assert_called_once_with(self.pid,shot['image_asset'])
         self.assertEqual(submitted[0]['90'],{'class_type':'LoadImage','inputs':{'image':'uploaded.jpg'}})
         self.assertEqual(submitted[0]['55']['inputs']['start_image'],['90',0]);finish.assert_called_once()
+    def test_unconfirmed_and_stale_images_use_text_without_losing_assets(self):
+        self.upload('character');self.upload('s1')
+        self.p['render_config']={'provider':'seedance','seedance_model':'doubao-seedance-2-5-260628','resolution':'720p'}
+        for stale in [False,True]:
+            if stale:
+                s.visual_action(self.p,'image-confirm',{'shot_id':'s1'})
+                self.p['shots'][0]['description']='A different scene'
+            s.save(self.p);p=s.load(self.pid);shot=p['shots'][0]
+            asset=shot['image_asset'];captured=[]
+            def cloud(key,method='GET',suffix='',body=None):
+                if method=='POST':captured.append(body);return {'id':'mock-task'}
+                return {'status':'succeeded'}
+            with patch.object(s.seedance,'call',side_effect=cloud):s.cloud_task(self.pid,shot,p,'fake',1)
+            self.assertFalse(any(x.get('type')=='image_url' for x in captured[0]['content']))
+            self.assertEqual(s.load(self.pid)['shots'][0]['image_asset'],asset)
+            plain=dict(shot);plain.pop('image_asset')
+            self.assertEqual(s.signature(shot),s.signature(plain))
+
     def test_cloud_task_passes_actual_first_frame(self):
         self.upload('character');self.upload('s1');s.visual_action(self.p,'image-confirm',{'shot_id':'s1'})
         self.p['render_config']={'provider':'seedance','seedance_model':'doubao-seedance-2-5-260628','resolution':'720p'};s.save(self.p)
