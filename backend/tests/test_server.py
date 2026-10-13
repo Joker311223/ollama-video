@@ -9,7 +9,7 @@ class Tests(unittest.TestCase):
         self.old_config=s.seedance.CONFIG_DIR;s.seedance.CONFIG_DIR=s.DATA/'config'
     def tearDown(self): s.DATA=self.old;s.seedance.CONFIG_DIR=self.old_config;self.tmp.cleanup()
     def test_duration_bounds(self):
-        with self.assertRaises(s.Invalid): s.settings({'brief':'故事','duration':20,'shot_count':1})
+        with self.assertRaises(s.Invalid): s.settings({'brief':'故事','duration':31,'shot_count':1})
         with self.assertRaises(s.Invalid): s.settings({'brief':'故事','duration':True,'shot_count':1})
         self.assertEqual(s.settings({'brief':'故事','duration':20,'shot_count':2})['duration'],20)
     def test_pacing_allocation(self):
@@ -21,10 +21,19 @@ class Tests(unittest.TestCase):
         self.assertEqual(sum(x['duration'] for x in adjusted),100)
         self.assertGreater(adjusted[3]['duration'],adjusted[0]['duration'])
         for count in range(1,13):
-            for total in range(count,count*10+1):
+            for total in range(count,count*30+1):
                 result=s.allocate_duration([{'duration':i%10+1} for i in range(count)],total)
                 self.assertEqual(sum(x['duration'] for x in result),total)
-                self.assertTrue(all(1<=x['duration']<=10 for x in result))
+                self.assertTrue(all(1<=x['duration']<=30 for x in result))
+
+    def test_thirty_second_shot(self):
+        self.assertEqual(s.settings({'brief':'故事','duration':30,'shot_count':1})['duration'],30)
+        shot=dict(id='s1',title='镜头',description='男孩',camera='固定',duration=30,prompt='A boy',negative='',seed=1)
+        self.assertEqual(s.shots_valid([shot],{'shot_count':1,'duration':30})[0]['duration'],30)
+        self.assertEqual(s.build_graph(shot,'c'*32)['55']['inputs']['length'],361)
+        paced=s.allocate_duration([{'duration':4},{'duration':8},{'duration':8},{'duration':10}],100)
+        self.assertEqual(sum(x['duration'] for x in paced),100)
+        self.assertTrue(all(1<=x['duration']<=30 for x in paced))
 
     def test_path_traversal(self):
         for pid in ['../secret','a/../../x','a'*31,'g'*32]:
@@ -37,7 +46,7 @@ class Tests(unittest.TestCase):
         with self.assertRaises(s.Invalid):s.shots_valid([shot],{'shot_count':1,'duration':3})
         self.assertEqual(s.shots_valid([shot],{'shot_count':1,'duration':2})[0]['prompt'],'A boy')
         self.assertEqual(s.shots_valid([shot],{'shot_count':1,'duration':100},match_total=False)[0]['duration'],2)
-        for value in [0,11,1.5,True]:
+        for value in [0,31,1.5,True]:
             with self.assertRaises(s.Invalid):s.shots_valid([dict(shot,duration=value)],{'shot_count':1,'duration':2},match_total=False)
     def test_description_and_camera_drive_generation(self):
         shot=dict(id='s1',description='白衣女鬼清晰站在楼道中央',camera='缓慢推进',duration=2,prompt='A visible ghost in corridor',negative='',seed=1)

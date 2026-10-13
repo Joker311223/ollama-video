@@ -59,7 +59,7 @@ def save_preferences(body):
             raise CloudError('请填写方舟 Seedance Model ID 或推理接入点 ID。')
         if not isinstance(config['seedream_model'],str) or not re.fullmatch(r'(?:doubao-seedream-|ep-)[A-Za-z0-9-]{1,100}',config['seedream_model']):
             raise CloudError('请填写方舟 Seedream 图片模型 ID 或推理接入点 ID。')
-        if config['resolution'] not in ('720p','1080p'): raise CloudError('分辨率请选择 720p 或 1080p。')
+        if config['resolution'] not in ('480p','720p','1080p'): raise CloudError('分辨率请选择 480p、720p 或 1080p。')
         key = body.get('api_key','')
         if not isinstance(key,str) or len(key)>4096 or any(ord(c)<32 for c in key): raise CloudError('API Key 格式无效。')
         key=key.strip()
@@ -107,7 +107,14 @@ def test_connection():
     call(api_key(),suffix='?page_size=1')
     return {'ok':True,'message':'API 鉴权通过；未创建视频任务。模型开通权限仍以实际生成为准。'}
 
+def validate_duration(shot,config):
+    model=config['seedance_model']
+    maximum=15 if model.startswith('doubao-seedance-2-0-') else 12 if model.startswith('doubao-seedance-1-0-pro') else 30
+    if type(shot.get('duration')) is not int or not 1<=shot['duration']<=maximum:
+        raise CloudError(f'当前模型每镜头最多 {maximum} 秒；30 秒镜头请使用 Seedance 2.5 或对应接入点。')
+
 def payload(shot,config,style='',first_frame=None):
+    validate_duration(shot,config)
     prompt=f"画面：{shot['description']}\n镜头运动：{shot['camera']}\n补充细节：{shot['prompt']}"
     if style: prompt+='\n风格：'+style
     if shot.get('negative'): prompt+='\n避免：'+shot['negative']

@@ -77,7 +77,7 @@ def settings(body):
     style=text(body.get('style','电影感'),'风格',300,False)
     duration=integer(body.get('duration'),1,120,'总时长')
     count=integer(body.get('shot_count'),1,12,'镜头数')
-    if not count<=duration<=count*10: raise Invalid('每镜头需 1–10 秒，请调整总时长或镜头数')
+    if not count<=duration<=count*30: raise Invalid('每镜头需 1–30 秒，请调整总时长或镜头数')
     return dict(brief=brief,style=style,duration=duration,shot_count=count)
 
 def shots_valid(shots,p,*,match_total=True):
@@ -88,7 +88,7 @@ def shots_valid(shots,p,*,match_total=True):
         sid=s.get('id',f'shot-{i+1}')
         if not isinstance(sid,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',sid) or sid in ids: raise Invalid('镜头 ID 无效或重复')
         ids.add(sid)
-        o={'id':sid,'duration':integer(s.get('duration'),1,10,'镜头时长'),'seed':integer(s.get('seed',20261013+i),0,2**53-1,'种子')}
+        o={'id':sid,'duration':integer(s.get('duration'),1,30,'镜头时长'),'seed':integer(s.get('seed',20261013+i),0,2**53-1,'种子')}
         for k,limit in [('title',200),('description',2000),('camera',500),('prompt',6000),('negative',2000)]: o[k]=text(s.get(k,''),k,limit,k!='negative')
         previous=next((x for x in p.get('shots',[]) if x.get('id')==sid),{})
         for field in ('image_asset','image_fingerprint','image_source_fingerprint'):
@@ -104,7 +104,7 @@ def allocate_duration(shots,total):
     targets=[value*total/sum(weights) for value in weights]
     durations=[1]*len(shots)
     for _ in range(total-len(shots)):
-        index=max((i for i,d in enumerate(durations) if d<10),key=lambda i:targets[i]-durations[i])
+        index=max((i for i,d in enumerate(durations) if d<30),key=lambda i:targets[i]-durations[i])
         durations[index]+=1
     return [dict(shot,duration=duration) for shot,duration in zip(shots,durations)]
 
@@ -151,7 +151,7 @@ def plan(pid):
     except Exception: pass
     update(pid,progress={'message':'正在用本地模型编写文字分镜','shot_index':0,'shot_total':p['shot_count']})
     schema={'type':'object','properties':{'title':{'type':'string'},'shots':{'type':'array','minItems':p['shot_count'],'maxItems':p['shot_count'],'items':{'type':'object','properties':{k:{'type':'integer' if k=='duration' else 'string'} for k in ['title','description','camera','duration','prompt','negative']},'required':['title','description','camera','duration','prompt','negative']}}},'required':['title','shots']}
-    system='你是专业分镜导演。返回严格 JSON。标题、画面描述、镜头运动用中文；prompt 和 negative 用英文。每个 prompt 必须独立包含人物外观、环境、明确可见的主体和动作，重复同一人物的外观以保持一致。保留用户要求，不要将明确的鬼怪或主体改为空镜。根据每个镜头的叙事作用、动作复杂度和情绪节奏自由分配时长：交代或过渡镜头短一些，关键动作与情绪镜头长一些。不要默认平均分配，不要求总时长能被镜头数整除。每个镜头1到10秒整数，时长之和等于总时长，镜头数量必须精确。只输出分镜，不输出思考。面向 Wan2.2 视频模型，画幅为横向16:9。英文提示词只写自然画面描述，禁止 Midjourney 参数（--ar、--v 等）、Markdown、权重语法或用户未指定的其他比例。'
+    system='你是专业分镜导演。返回严格 JSON。标题、画面描述、镜头运动用中文；prompt 和 negative 用英文。每个 prompt 必须独立包含人物外观、环境、明确可见的主体和动作，重复同一人物的外观以保持一致。保留用户要求，不要将明确的鬼怪或主体改为空镜。根据每个镜头的叙事作用、动作复杂度和情绪节奏自由分配时长：交代或过渡镜头短一些，关键动作与情绪镜头长一些。不要默认平均分配，不要求总时长能被镜头数整除。每个镜头1到30秒整数，时长之和等于总时长，镜头数量必须精确。只输出分镜，不输出思考。面向 Wan2.2 视频模型，画幅为横向16:9。英文提示词只写自然画面描述，禁止 Midjourney 参数（--ar、--v 等）、Markdown、权重语法或用户未指定的其他比例。'
     try:
         result=request(OLLAMA+'/api/chat',{'model':MODEL,'stream':False,'think':False,'options':{'num_ctx':8192,'num_predict':3500},'format':schema,'keep_alive':'5m','messages':[{'role':'system','content':system},{'role':'user','content':json.dumps({k:p[k] for k in ['brief','style','duration','shot_count']},ensure_ascii=False)}]},timeout=600)
         check_cancel(pid)
@@ -345,6 +345,7 @@ def cloud_record(pid,cache_key,record):
         p=load(pid);p.setdefault('cloud_tasks',{})[cache_key]=record;save(p)
 
 def cloud_task(pid,shot,p,key,index):
+    seedance.validate_duration(shot,p['render_config'])
     cache_key=cloud_signature(shot,p)
     record=load(pid).get('cloud_tasks',{}).get(cache_key,{})
     task=record.get('id')
@@ -423,7 +424,7 @@ def render_cloud(pid):
             try:
                 download_cloud(pid,result.get('content',{}).get('video_url'),source)
                 check_cancel(pid)
-                width,height=(1280,720) if p['render_config']['resolution']=='720p' else (1920,1080)
+                width,height={'480p':(854,480),'720p':(1280,720),'1080p':(1920,1080)}[p['render_config']['resolution']]
                 filters=f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,tpad=stop_mode=clone:stop_duration=1'
                 subprocess.run(['/opt/homebrew/bin/ffmpeg','-v','error','-y','-i',str(source),'-t',str(shot['duration']),'-vf',filters,'-an','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',str(temp)],check=True,capture_output=True)
                 check_cancel(pid);os.replace(temp,dest)
@@ -548,7 +549,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self.origin_ok(): return self.send_json({'error':'来源无效'},403)
             path=unquote(urlparse(self.path).path)
-            if path=='/api/bootstrap': return self.send_json({'app':'jingxu-studio','api_version':3,'token':TOKEN,'projects':projects(),'preferences':seedance.public_preferences(),'settings':{'model':MODEL,'data_dir':str(DATA),'resolution':'512×288','fps':12,'max_shot_duration':10}})
+            if path=='/api/bootstrap': return self.send_json({'app':'jingxu-studio','api_version':4,'token':TOKEN,'projects':projects(),'preferences':seedance.public_preferences(),'settings':{'model':MODEL,'data_dir':str(DATA),'resolution':'512×288','fps':12,'max_shot_duration':30}})
             if path=='/api/preferences': return self.send_json(seedance.public_preferences())
             if path=='/api/projects': return self.send_json(projects())
             if path=='/api/health':
@@ -635,6 +636,8 @@ class Handler(BaseHTTPRequestHandler):
                     if p['approved_revision']!=p['revision']: raise Conflict('请先确认当前版本的分镜')
                     require_images(p)
                     config=render_configuration(body)
+                    if config['provider']=='seedance':
+                        for shot in p['shots']: seedance.validate_duration(shot,config)
                     p['shots']=shots_valid(p['shots'],p); p.update(render_config=config,render_id=uuid.uuid4().hex,video_url=None); p.update(status='rendering',error=None,progress={'message':'等待视频引擎','shot_index':0,'shot_total':len(p['shots'])}); save(p); launch(pid,render); return self.send_json(p)
                 elif action=='replan':
                     p.update(settings(body)); p.update(revision=p['revision']+1,approved_revision=None,status='planning',shots=[],video_url=None,error=None,progress={'message':'等待本地模型','shot_index':0,'shot_total':p['shot_count']}); save(p); launch(pid,plan); return self.send_json(p)

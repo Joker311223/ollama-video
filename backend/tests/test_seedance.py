@@ -68,6 +68,34 @@ class CloudTests(unittest.TestCase):
             self.assertEqual(req.full_url,'https://ark.cn-beijing.volces.com/api/v3/images/generations')
             self.assertEqual(req.method,'POST')
             self.assertIsInstance(opener.call_args.args[0],c.NoRedirect)
+    def test_480p_preferences_and_thirty_second_payload(self):
+        config={**self.config,'resolution':'480p'}
+        with patch.object(c,'keychain',return_value={'configured':False}):
+            self.assertEqual(c.save_preferences(config)['resolution'],'480p')
+            self.assertEqual(c.preferences()['resolution'],'480p')
+        for frame in [None,'data:image/jpeg;base64,fixture']:
+            result=c.payload(dict(self.shot,duration=30),config,first_frame=frame)
+            self.assertEqual(result['duration'],30)
+            self.assertEqual(result['resolution'],'480p')
+        with self.assertRaises(c.CloudError):c.payload(dict(self.shot,duration=31),config)
+        for model in ['doubao-seedance-2-0-260128','doubao-seedance-1-0-pro-250528']:
+            with self.assertRaises(c.CloudError):c.payload(dict(self.shot,duration=30),dict(config,seedance_model=model))
+
+    @unittest.skipUnless(Path('/opt/homebrew/bin/ffmpeg').is_file(),'ffmpeg required')
+    def test_real_480p_thirty_second_output(self):
+        self.p['shots'][0]['duration']=30;self.p['duration']=30
+        self.p['render_config']['resolution']='480p';s.save(self.p)
+        fixture=s.DATA/'fixture-long.mp4'
+        subprocess.run(['/opt/homebrew/bin/ffmpeg','-v','error','-y','-f','lavfi','-i','color=c=blue:size=320x180:rate=24','-t','30','-c:v','libx264',str(fixture)],check=True)
+        def download(pid,url,target):shutil.copyfile(fixture,target)
+        with patch.object(c,'api_key',return_value='test'),patch.object(s,'cloud_task',return_value={'content':{'video_url':'mock'}}),patch.object(s,'download_cloud',side_effect=download):
+            s.render(self.p['id'])
+        import av
+        with av.open(str(s.directory(self.p['id'])/'final.mp4')) as video:
+            self.assertEqual((video.streams.video[0].width,video.streams.video[0].height),(854,480))
+            self.assertAlmostEqual(video.duration/1e6,30,places=1)
+            self.assertEqual(video.streams.video[0].frames,720)
+
     def test_signature_isolated_by_engine_model_resolution_and_edit(self):
         original=s.cloud_signature(self.shot,self.p)
         self.assertNotEqual(original,s.signature(self.shot))

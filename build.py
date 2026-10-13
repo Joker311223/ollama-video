@@ -22,7 +22,7 @@ for size in [16,32,128,256,512]:
   name=f'icon_{size}x{size}'+('@2x' if scale==2 else '')+'.png'
   subprocess.run(['sips','-z',str(size*scale),str(size*scale),str(root/'native/icon.png'),'--out',str(iconset/name)],check=True,stdout=subprocess.DEVNULL)
 subprocess.run(['iconutil','-c','icns',str(iconset),'-o',str(resources/'AppIcon.icns')],check=True)
-info={'CFBundleName':'镜序','CFBundleDisplayName':'镜序','CFBundleIdentifier':'local.jingxu.storyboardstudio','CFBundleVersion':'3','CFBundleShortVersionString':'0.3.0','CFBundleExecutable':'JingXu','CFBundlePackageType':'APPL','CFBundleIconFile':'AppIcon','LSMinimumSystemVersion':'14.0','NSHighResolutionCapable':True,'NSAppTransportSecurity':{'NSAllowsLocalNetworking':True,'NSAllowsArbitraryLoadsInWebContent':True}}
+info={'CFBundleName':'镜序','CFBundleDisplayName':'镜序','CFBundleIdentifier':'local.jingxu.storyboardstudio','CFBundleVersion':'4','CFBundleShortVersionString':'0.3.1','CFBundleExecutable':'JingXu','CFBundlePackageType':'APPL','CFBundleIconFile':'AppIcon','LSMinimumSystemVersion':'14.0','NSHighResolutionCapable':True,'NSAppTransportSecurity':{'NSAllowsLocalNetworking':True,'NSAllowsArbitraryLoadsInWebContent':True}}
 with open(contents/'Info.plist','wb') as f:plistlib.dump(info,f)
 subprocess.run(['codesign','--force','--deep','--sign','-',str(app)],check=True)
 print(app)
