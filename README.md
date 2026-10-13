@@ -8,6 +8,10 @@
 输入故事 → 生成文字分镜 → 编辑画面、镜头与时长 → 确认版本 → 生成视频 → 预览 / 导出
 ```
 
+## 项目文档
+
+[文档首页](docs/README.md) · [安装与构建](docs/installation.md) · [使用手册](docs/user-guide.md) · [配置参考](docs/configuration.md) · [常见问题](docs/troubleshooting.md) · [开发与接口](docs/development.md)
+
 ## 功能
 
 - **文字分镜**：输入故事、风格、总时长和镜头数，生成结构化分镜。
