@@ -33,7 +33,11 @@ export STUDIO_WORKSPACE="/你的运行环境目录"
 "$STUDIO_WORKSPACE/work/comfy-env/bin/python" backend/server.py
 ```
 
-## 当前固定配置
+## 视频引擎与 API Key
+
+右上角可选择本地 Wan2.2 或 Seedance 云端；“引擎设置”支持 API Key、Model ID 和云端分辨率。详细步骤见 [Seedance 文档](seedance.md)。生成中禁止更改配置，每次生成保存一份不含密钥的配置快照。
+
+## 当前本地固定配置
 
 | 项目 | 当前值 |
 | --- | --- |
@@ -43,7 +47,7 @@ export STUDIO_WORKSPACE="/你的运行环境目录"
 | ffmpeg 可执行文件 | `/opt/homebrew/bin/ffmpeg` |
 | 视频参数 | 512×288、12 fps、Euler、20 steps、CFG 5 |
 
-这些值尚未提供设置界面。修改模型需要同时核对输出格式、模型文件、工作流节点和硬件适配，不能只替换名称就保证兼容。
+上表本地参数尚未提供设置界面。修改模型需要同时核对输出格式、模型文件、工作流节点和硬件适配，不能只替换名称就保证兼容。
 
 ## 数据与日志
 

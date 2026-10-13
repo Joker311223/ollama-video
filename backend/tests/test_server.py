@@ -6,7 +6,8 @@ s=importlib.util.module_from_spec(spec);spec.loader.exec_module(s)
 class Tests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.old=s.DATA;s.DATA=Path(self.tmp.name)
-    def tearDown(self): s.DATA=self.old;self.tmp.cleanup()
+        self.old_config=s.seedance.CONFIG_DIR;s.seedance.CONFIG_DIR=s.DATA/'config'
+    def tearDown(self): s.DATA=self.old;s.seedance.CONFIG_DIR=self.old_config;self.tmp.cleanup()
     def test_duration_bounds(self):
         with self.assertRaises(s.Invalid): s.settings({'brief':'故事','duration':20,'shot_count':1})
         with self.assertRaises(s.Invalid): s.settings({'brief':'故事','duration':True,'shot_count':1})
@@ -79,6 +80,7 @@ class Tests(unittest.TestCase):
             with self.assertRaises(s.Invalid):s.compile_prompts(p['id'],p)
         self.assertNotIn('render_prompts',s.load(p['id']))
     def test_release_memory_only_when_idle(self):
+        s.save({'id':'d'*32,'status':'rendering'})
         with patch.object(s,'render_job'),patch.object(s,'request',return_value={'queue_running':[],'queue_pending':[]}) as req:
             s.render('d'*32)
             self.assertEqual(req.call_args.args,(s.COMFY+'/free',{'unload_models':True,'free_memory':True}))

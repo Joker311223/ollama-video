@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """镜序 local-only storyboard and ComfyUI job server."""
-import copy, hashlib, json, math, os, re, secrets, subprocess, threading, time, uuid
+import copy, hashlib, json, math, os, re, secrets, subprocess, threading, time, uuid, sys
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse, unquote
 from urllib.error import HTTPError
+
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import seedance
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKSPACE = Path(os.getenv('STUDIO_WORKSPACE', str(ROOT)))
@@ -221,6 +224,8 @@ def poll_prompt(pid,prompt_id,index,total):
         time.sleep(2)
 
 def render(pid):
+    if load(pid).get('render_config',{}).get('provider')=='seedance':
+        return render_cloud(pid)
     try:
         render_job(pid)
     finally:
@@ -301,13 +306,125 @@ def render_job(pid):
         s['video_url']=f'/media/{pid}/{filename}'
         update(pid,shots=p['shots'],active_prompt_id=None)
         paths.append(dest)
+    finish_video(pid,p,paths)
+
+def finish_video(pid,p,paths):
+    folder=directory(pid)
     check_cancel(pid)
     update(pid,progress={'message':'正在合并视频','shot_index':len(paths),'shot_total':len(paths)})
     listing=folder/'concat.txt'; listing.write_text('\n'.join("file '"+str(path).replace("'","'\\''")+"'" for path in paths))
     final=folder/'final.mp4'; temporary=folder/'final.tmp.mp4'
     subprocess.run(['/opt/homebrew/bin/ffmpeg','-v','error','-y','-f','concat','-safe','0','-i',str(listing),'-c','copy','-movflags','+faststart',str(temporary)],check=True,capture_output=True)
     check_cancel(pid); os.replace(temporary,final)
-    update(pid,status='completed',video_url=f'/media/{pid}/final.mp4?v={p["revision"]}',error=None,progress={'message':'视频已完成','shot_index':len(paths),'shot_total':len(paths)})
+    update(pid,status='completed',video_url=f'/media/{pid}/final.mp4?v={p.get("render_id",p["revision"])}',error=None,progress={'message':'视频已完成','shot_index':len(paths),'shot_total':len(paths)})
+
+def render_configuration(body):
+    config=seedance.preferences()
+    # A stale client must never silently select a paid provider.
+    if body.get('provider','local')!=config['provider']:
+        raise Conflict('视频引擎设置已变更，请刷新后确认所选引擎再生成。')
+    if config['provider']=='local': return {'provider':'local'}
+    if any(body.get(k)!=config[k] for k in ['seedance_model','resolution']):
+        raise Conflict('Seedance 设置已变更，请刷新后重试。')
+    seedance.api_key()
+    return {**config,'fps':24,'ratio':'16:9','generate_audio':False}
+
+def cloud_signature(shot,p):
+    return hashlib.sha256(json.dumps({'pipeline_version':1,'shot':signature(shot),'config':p['render_config'],'style':p.get('style','')},sort_keys=True).encode()).hexdigest()[:24]
+
+def cloud_record(pid,cache_key,record):
+    with LOCK:
+        p=load(pid);p.setdefault('cloud_tasks',{})[cache_key]=record;save(p)
+
+def cloud_task(pid,shot,p,key,index):
+    cache_key=cloud_signature(shot,p)
+    record=load(pid).get('cloud_tasks',{}).get(cache_key,{})
+    task=record.get('id')
+    if not task:
+        if record.get('status')=='submitting':
+            raise seedance.CloudError('上次云端创建结果不确定，为避免重复扣费已停止。请先到方舟控制台核对任务；确认后修改该镜头再重试。')
+        check_cancel(pid)
+        record={'status':'submitting','requested_duration':max(4,shot['duration'])}
+        cloud_record(pid,cache_key,record)
+        try:
+            response=seedance.call(key,'POST',body=seedance.payload(shot,p['render_config'],p.get('style','')))
+        except seedance.Rejected:
+            cloud_record(pid,cache_key,{**record,'status':'rejected'})
+            raise
+        task=seedance.task_id(response.get('id'))
+        record.update(id=task,status='queued');cloud_record(pid,cache_key,record)
+    task=seedance.task_id(task)
+    update(pid,active_cloud_task_id=task)
+    deadline=time.monotonic()+7200
+    while time.monotonic()<deadline:
+        if CANCEL.get(pid,threading.Event()).is_set():
+            # Ark permits queued cancellation; a running task may continue and bill.
+            try:
+                state=seedance.call(key,suffix='/'+task)
+                if state.get('status')=='queued':
+                    seedance.call(key,'DELETE',suffix='/'+task)
+                    cloud_record(pid,cache_key,{**record,'status':'cancel_requested'})
+            except seedance.CloudError: pass
+            update(pid,active_cloud_task_id=None)
+            raise Cancelled()
+        result=seedance.call(key,suffix='/'+task)
+        status=result.get('status')
+        record['status']=status;cloud_record(pid,cache_key,record)
+        if status=='succeeded': return result
+        if status in ('failed','expired','cancelled'):
+            # Clear terminal IDs so an explicit user retry can create a fresh task.
+            cloud_record(pid,cache_key,{**record,'id':None})
+            raise seedance.CloudError(f'Seedance 任务{task}未完成（{status}），请在方舟控制台查看原因。')
+        if status not in ('queued','running'):
+            raise seedance.CloudError('方舟返回未知任务状态，已保留任务 ID，请稍后重试查询。')
+        update(pid,progress={'message':'Seedance 云端排队中' if status=='queued' else 'Seedance 云端生成中（完成后自动下载）','shot_index':index,'shot_total':len(p['shots'])})
+        CANCEL.setdefault(pid,threading.Event()).wait(3)
+    raise seedance.CloudError('云端任务查询超时，任务 ID 已保留；重试将继续查询，不会重复提交。')
+
+def download_cloud(pid,url,target):
+    # Signed download links receive no Authorization header or API key.
+    parsed=urlparse(url) if isinstance(url,str) else None
+    if not parsed or parsed.scheme!='https' or not parsed.hostname or not parsed.hostname.endswith('.volces.com') or parsed.username or parsed.port not in (None,443):
+        raise seedance.CloudError('方舟返回的视频地址无效，任务已保留。')
+    from urllib.request import build_opener
+    try:
+        with build_opener(seedance.NoRedirect()).open(url,timeout=120) as response, target.open('wb') as f:
+            size=0
+            while True:
+                check_cancel(pid)
+                chunk=response.read(1024*1024)
+                if not chunk: break
+                size+=len(chunk)
+                if size>1024**3: raise seedance.CloudError('视频文件超过 1 GB 下载限制。')
+                f.write(chunk)
+            if not size: raise seedance.CloudError('下载的视频文件为空。')
+    except Cancelled: raise
+    except (OSError,HTTPError) as e:
+        raise seedance.CloudError('云端视频下载失败；任务 ID 已保留，重试会重新下载。') from None
+
+def render_cloud(pid):
+    p=load(pid);key=seedance.api_key();folder=directory(pid);paths=[]
+    for index,shot in enumerate(p['shots'],1):
+        check_cancel(pid)
+        dest=folder/f"{shot['id']}-seedance-{cloud_signature(shot,p)}.mp4"
+        if not dest.exists():
+            result=cloud_task(pid,shot,p,key,index)
+            check_cancel(pid)
+            update(pid,progress={'message':'正在下载并处理 Seedance 镜头','shot_index':index,'shot_total':len(p['shots'])})
+            source=folder/'cloud-download.mp4';temp=folder/'cloud-encoding.mp4'
+            try:
+                download_cloud(pid,result.get('content',{}).get('video_url'),source)
+                check_cancel(pid)
+                width,height=(1280,720) if p['render_config']['resolution']=='720p' else (1920,1080)
+                filters=f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,tpad=stop_mode=clone:stop_duration=1'
+                subprocess.run(['/opt/homebrew/bin/ffmpeg','-v','error','-y','-i',str(source),'-t',str(shot['duration']),'-vf',filters,'-an','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',str(temp)],check=True,capture_output=True)
+                check_cancel(pid);os.replace(temp,dest)
+            finally:
+                source.unlink(missing_ok=True);temp.unlink(missing_ok=True)
+        shot['video_url']=f'/media/{pid}/{dest.name}'
+        update(pid,shots=p['shots'],active_cloud_task_id=None)
+        paths.append(dest)
+    finish_video(pid,p,paths)
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
@@ -322,10 +439,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self.origin_ok(): return self.send_json({'error':'来源无效'},403)
             path=unquote(urlparse(self.path).path)
-            if path=='/api/bootstrap': return self.send_json({'app':'jingxu-studio','token':TOKEN,'projects':projects(),'settings':{'model':MODEL,'data_dir':str(DATA),'resolution':'512×288','fps':12,'max_shot_duration':10}})
+            if path=='/api/bootstrap': return self.send_json({'app':'jingxu-studio','api_version':2,'token':TOKEN,'projects':projects(),'preferences':seedance.public_preferences(),'settings':{'model':MODEL,'data_dir':str(DATA),'resolution':'512×288','fps':12,'max_shot_duration':10}})
+            if path=='/api/preferences': return self.send_json(seedance.public_preferences())
             if path=='/api/projects': return self.send_json(projects())
             if path=='/api/health':
-                health={'model':MODEL,'details':{},'ffmpeg':Path('/opt/homebrew/bin/ffmpeg').is_file(),'models':all((WORKSPACE/'work/ComfyUI/models'/x).is_file() for x in ['diffusion_models/wan2.2_ti2v_5B_fp16.safetensors','text_encoders/umt5_xxl_fp16.safetensors','vae/wan2.2_vae.safetensors'])}
+                prefs=seedance.public_preferences()
+                health={'seedance':{'configured':prefs['key_configured'],'model':prefs['seedance_model'],'resolution':prefs['resolution']},'model':MODEL,'details':{},'ffmpeg':Path('/opt/homebrew/bin/ffmpeg').is_file(),'models':all((WORKSPACE/'work/ComfyUI/models'/x).is_file() for x in ['diffusion_models/wan2.2_ti2v_5B_fp16.safetensors','text_encoders/umt5_xxl_fp16.safetensors','vae/wan2.2_vae.safetensors'])}
                 for name,url in [('ollama',OLLAMA+'/api/tags'),('comfy',COMFY+'/system_stats')]:
                     try:
                         result=request(url,timeout=2); health[name]=True
@@ -377,6 +496,11 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body,dict): raise Invalid('请求格式无效')
             parts=urlparse(self.path).path.strip('/').split('/')
             with LOCK:
+                if parts==['api','preferences'] and self.command=='POST':
+                    if any(p['status']=='rendering' for p in projects()): raise Conflict('视频生成期间不能更改引擎或 API 设置。')
+                    return self.send_json(seedance.save_preferences(body))
+                if parts==['api','preferences','test'] and self.command=='POST':
+                    return self.send_json(seedance.test_connection())
                 if parts==['api','projects'] and self.command=='POST':
                     opts=settings(body); pid=uuid.uuid4().hex
                     p=dict(id=pid,title='新的故事',revision=1,approved_revision=None,status='planning',shots=[],error=None,video_url=None,progress={'message':'等待本地模型','shot_index':0,'shot_total':opts['shot_count']},**opts)
@@ -385,7 +509,7 @@ class Handler(BaseHTTPRequestHandler):
                 pid=parts[2]; p=load(pid); action=parts[3] if len(parts)==4 else 'edit'
                 if action=='cancel':
                     if p['status'] in BUSY:
-                        CANCEL.setdefault(pid,threading.Event()).set(); p['progress']['message']='正在停止：当前镜头或分镜请求完成后停止'; save(p)
+                        CANCEL.setdefault(pid,threading.Event()).set(); p['progress']['message']='正在停止；已运行的云端任务可能继续计费，可在方舟控制台查看' if p.get('render_config',{}).get('provider')=='seedance' and p['status']=='rendering' else '正在停止：当前镜头或分镜请求完成后停止'; save(p)
                     return self.send_json(p)
                 guard(p,body)
                 if action=='edit' and self.command=='PUT':
@@ -395,11 +519,13 @@ class Handler(BaseHTTPRequestHandler):
                     p['shots']=shots_valid(p['shots'],p); p.update(approved_revision=p['revision'],status='approved',error=None)
                 elif action=='render':
                     if p['approved_revision']!=p['revision']: raise Conflict('请先确认当前版本的分镜')
-                    p['shots']=shots_valid(p['shots'],p); p.update(status='rendering',error=None,progress={'message':'等待视频引擎','shot_index':0,'shot_total':len(p['shots'])}); save(p); launch(pid,render); return self.send_json(p)
+                    config=render_configuration(body)
+                    p['shots']=shots_valid(p['shots'],p); p.update(render_config=config,render_id=uuid.uuid4().hex,video_url=None); p.update(status='rendering',error=None,progress={'message':'等待视频引擎','shot_index':0,'shot_total':len(p['shots'])}); save(p); launch(pid,render); return self.send_json(p)
                 elif action=='replan':
                     p.update(settings(body)); p.update(revision=p['revision']+1,approved_revision=None,status='planning',shots=[],video_url=None,error=None,progress={'message':'等待本地模型','shot_index':0,'shot_total':p['shot_count']}); save(p); launch(pid,plan); return self.send_json(p)
                 else: raise Invalid('请求方法或操作无效')
                 save(p); return self.send_json(p)
+        except seedance.CloudError as e: self.send_json({'error':str(e)},400)
         except Conflict as e: self.send_json({'error':str(e)},409)
         except (Invalid,ValueError,KeyError) as e: self.send_json({'error':str(e)},400)
         except Exception as e: self.send_json({'error':str(e)},500)

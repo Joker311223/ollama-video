@@ -2,7 +2,7 @@
 
 **把一个故事变成分镜，确认后再生成视频。**
 
-镜序（Storyboard Studio）是一款面向 Apple Silicon Mac 的本地视频创作工具。通过 Ollama 生成可编辑的文字分镜，确认后调用 ComfyUI + Wan2.2 TI2V-5B 逐镜头生成视频，再自动合成为成片。
+镜序（Storyboard Studio）是一款面向 Apple Silicon Mac 的本地视频创作工具。通过 Ollama 生成可编辑的文字分镜，确认后选择本地 ComfyUI + Wan2.2 TI2V-5B 或火山方舟 Seedance 逐镜头生成视频，再自动合成为成片。
 
 ```text
 输入故事 → 生成文字分镜 → 编辑画面、镜头与时长 → 确认版本 → 生成视频 → 预览 / 导出
@@ -12,7 +12,7 @@
 
 🌐 **[在线文档网站](https://joker311223.github.io/ollama-video/)**
 
-[文档首页](docs/README.md) · [安装与构建](docs/installation.md) · [使用手册](docs/user-guide.md) · [配置参考](docs/configuration.md) · [常见问题](docs/troubleshooting.md) · [开发与接口](docs/development.md)
+[文档首页](docs/README.md) · [安装与构建](docs/installation.md) · [使用手册](docs/user-guide.md) · [Seedance 云端配置](docs/seedance.md) · [配置参考](docs/configuration.md) · [常见问题](docs/troubleshooting.md) · [开发与接口](docs/development.md)
 
 ## 功能
 
@@ -29,8 +29,8 @@
 | --- | --- |
 | 桌面外壳 | Swift / AppKit / WKWebView |
 | 分镜模型 | Ollama `qwen3.5:9b` |
-| 视频模型 | ComfyUI / Wan2.2 TI2V-5B |
-| 输出 | 512 × 288、12 fps、无声 MP4 |
+| 视频模型 | 本地 Wan2.2 TI2V-5B / 火山方舟 Seedance |
+| 输出 | 本地 512 × 288 / 12 fps；云端 720p 或 1080p / 24 fps，均为无声 MP4 |
 | 时长 | 总时长 1–120 秒，1–12 个镜头，每镜头 1–10 秒 |
 | 本地服务 | 应用 8765 / Ollama 11434 / ComfyUI 8188 |
 
@@ -124,7 +124,7 @@ node --check frontend/app.js  # 可选，需要 Node.js
 
 - 项目与视频：`~/Movies/镜序`
 - 应用日志：`~/Library/Logs/镜序.log`
-- 所有推理接口默认连接本机；模型下载需要联网。
+- 默认使用本地引擎；切换 Seedance 并开始生成后，分镜内容发送到火山方舟并按账户账单计费。API Key 存放在 macOS 钥匙串。
 - Ollama 未连接：检查本地服务以及 `qwen3.5:9b` 是否已下载。
 - ComfyUI 启动失败：检查运行环境路径、Python 依赖、模型文件名和日志。
 - 退出窗口不会终止后台任务；后台进程意外中断后，重启会标记中断项目，可重新开始生成。

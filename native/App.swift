@@ -42,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 if let data = data, let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], json["app"] as? String == "jingxu-studio" {
+                    guard json["api_version"] as? Int == 2 else {
+                        self.failure("旧版后台服务仍在运行。请等待现有任务完成，并关闭旧版后台服务后再打开镜序；项目会保留。"); return
+                    }
                     self.web.load(URLRequest(url: self.base)); return
                 }
                 if let http = response as? HTTPURLResponse, http.statusCode == 200 {
@@ -80,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         try process.run(); child = process
     }
     func failure(_ text: String) { let alert = NSAlert(); alert.messageText = "镜序启动遇到问题"; alert.informativeText = text; alert.runModal() }
-    @objc func about() { let a = NSAlert(); a.messageText = "镜序 · Storyboard Studio"; a.informativeText = "本地文字分镜与视频创作\nOllama + ComfyUI / Wan2.2\n项目保存在“影片/镜序”。退出窗口后，已开始的任务会继续运行。"; a.runModal() }
+    @objc func about() { let a = NSAlert(); a.messageText = "镜序 · Storyboard Studio"; a.informativeText = "本地文字分镜与视频创作\nOllama 分镜 + 本地 Wan2.2 / Seedance 云端\n项目保存在“影片/镜序”。退出窗口后，已开始的任务会继续运行。"; a.runModal() }
     @objc func showProjects() { let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Movies/镜序"); try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true); NSWorkspace.shared.open(url) }
     @objc func reload() { web.reload() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

@@ -13,6 +13,8 @@ title: 开发与接口
 | `native/App.swift` | AppKit 窗口、WKWebView、后端启动、菜单与导出 |
 | `frontend/` | 本地页面、分镜编辑、状态展示及播放 |
 | `backend/server.py` | HTTP API、项目持久化、Ollama / ComfyUI 任务协调 |
+| `backend/seedance.py` | 火山方舟请求、普通设置与钥匙串访问 |
+| `native/Keychain.swift` | 使用 Security.framework 存取 API Key |
 | `backend/base_workflow.json` | 提交到 ComfyUI 前被填充的工作流模板 |
 | `build.py` | Swift 编译、资源打包、图标与临时签名 |
 
@@ -38,6 +40,9 @@ python3 build.py --workspace "$STUDIO_WORKSPACE"
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | `/api/bootstrap` | 应用标识、令牌、项目和设置 |
+| GET | `/api/preferences` | 读取引擎配置，仅返回密钥是否配置 |
+| POST | `/api/preferences` | 保存 provider、seedance_model、resolution；可选 api_key 或 clear_key |
+| POST | `/api/preferences/test` | 测试已保存密钥的 API 鉴权，不创建视频任务 |
 | GET | `/api/health` | Ollama、ComfyUI、模型和 ffmpeg 状态 |
 | GET | `/api/projects` | 项目列表 |
 | GET | `/api/projects/{id}` | 单个项目及进度 |
@@ -56,6 +61,8 @@ python3 build.py --workspace "$STUDIO_WORKSPACE"
 ```
 
 编辑传入 `revision`、`title` 和完整 `shots` 数组。镜头包含 `id`、`title`、`description`、`camera`、`prompt`、`negative`、`duration`、`seed`。镜头 ID 不重复，镜头数必须匹配项目设置；保存编辑时，总时长由后端按镜头时长自动求和，不要求匹配初始总时长。
+
+Seedance 渲染请求除了 `revision`，还需传入与当前设置一致的 `provider`、`seedance_model`、`resolution`，避免旧客户端意外选择付费引擎。bootstrap 包含 `api_version: 2` 和 `preferences`。
 
 创建返回 201；异步请求的成功响应只表示任务已启动，不表示视频已完成。轮询项目状态确认结果。常见错误码为 400（参数）、403（来源或令牌）、404（读取资源不存在）、409（忙碌或版本冲突）、500（内部错误），响应体包含 `error`。
 

@@ -9,3 +9,5 @@
 任务状态落盘并原子更新；应用重启将正在运行的任务标记 interrupted。重试可复用未变更且已完成的镜头。关闭窗口不终止后台进程。取消不打断其他用户的 ComfyUI：删除自身排队任务，已运行的任务安全结束后停止后续镜头。Ollama 请求取消也要等待当前响应。
 
 运行测试：`python -m unittest discover -s tests -v`。
+
+Seedance 云端配置见 [使用文档](../docs/seedance.md)。API Key 通过原生钥匙串组件保存；直接运行源码后端前先执行 build.py 构建该组件。云端任务保留 ID 支持恢复，创建结果未知时不会自动重提。
