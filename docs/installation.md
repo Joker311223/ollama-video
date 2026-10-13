@@ -1,3 +1,7 @@
+---
+title: 安装与构建
+---
+
 # 安装与构建
 
 [文档首页](README.md) · [使用手册](user-guide.md)

@@ -10,6 +10,8 @@
 
 ## 项目文档
 
+🌐 **[在线文档网站](https://joker311223.github.io/ollama-video/)**
+
 [文档首页](docs/README.md) · [安装与构建](docs/installation.md) · [使用手册](docs/user-guide.md) · [配置参考](docs/configuration.md) · [常见问题](docs/troubleshooting.md) · [开发与接口](docs/development.md)
 
 ## 功能

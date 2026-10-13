@@ -1,0 +1,15 @@
+title: 镜序
+description: 本地 AI 分镜与视频创作
+url: https://joker311223.github.io
+baseurl: /ollama-video
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+exclude:
+  - README.md

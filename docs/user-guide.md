@@ -1,3 +1,7 @@
+---
+title: 使用手册
+---
+
 # 使用手册
 
 [文档首页](README.md) · [常见问题](troubleshooting.md)
