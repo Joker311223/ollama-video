@@ -21,6 +21,9 @@ class Tests(unittest.TestCase):
         shot=dict(id='s1',title='镜头',description='男孩',camera='固定',duration=2,prompt='A boy',negative='',seed=1)
         with self.assertRaises(s.Invalid):s.shots_valid([shot],{'shot_count':1,'duration':3})
         self.assertEqual(s.shots_valid([shot],{'shot_count':1,'duration':2})[0]['prompt'],'A boy')
+        self.assertEqual(s.shots_valid([shot],{'shot_count':1,'duration':100},match_total=False)[0]['duration'],2)
+        for value in [0,11,1.5,True]:
+            with self.assertRaises(s.Invalid):s.shots_valid([dict(shot,duration=value)],{'shot_count':1,'duration':2},match_total=False)
     def test_description_and_camera_drive_generation(self):
         shot=dict(id='s1',description='白衣女鬼清晰站在楼道中央',camera='缓慢推进',duration=2,prompt='A visible ghost in corridor',negative='',seed=1)
         original=s.signature(shot)
@@ -94,9 +97,13 @@ class Tests(unittest.TestCase):
             post('confirm',{'revision':1}).close()
             edit=dict(revision=1,title='edited',shots=p['shots'])
             edit['shots'][0]['camera']='推进'
+            edit['shots'][0]['duration']=5
             req=Request(f'http://127.0.0.1:{s.PORT}/api/projects/{p["id"]}',data=json.dumps(edit).encode(),headers={'X-Studio-Token':s.TOKEN,'Content-Type':'application/json'},method='PUT')
             with urlopen(req) as response: edited=json.load(response)
             self.assertIsNone(edited['approved_revision'])
+            self.assertEqual(edited['duration'],5)
+            self.assertEqual(s.load(p['id'])['duration'],5)
+            self.assertEqual(edited['revision'],2)
             with self.assertRaises(HTTPError) as e:post('render',{'revision':2})
             self.assertEqual(e.exception.code,409)
             post('confirm',{'revision':2}).close()

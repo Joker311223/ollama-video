@@ -55,7 +55,7 @@ python3 build.py --workspace "$STUDIO_WORKSPACE"
 {"brief":"男孩躺在草坪上，看着蓝天白云","style":"自然纪录片","duration":10,"shot_count":2}
 ```
 
-编辑传入 `revision`、`title` 和完整 `shots` 数组。镜头包含 `id`、`title`、`description`、`camera`、`prompt`、`negative`、`duration`、`seed`。镜头 ID 不重复，镜头数与总时长必须匹配项目设置。
+编辑传入 `revision`、`title` 和完整 `shots` 数组。镜头包含 `id`、`title`、`description`、`camera`、`prompt`、`negative`、`duration`、`seed`。镜头 ID 不重复，镜头数必须匹配项目设置；保存编辑时，总时长由后端按镜头时长自动求和，不要求匹配初始总时长。
 
 创建返回 201；异步请求的成功响应只表示任务已启动，不表示视频已完成。轮询项目状态确认结果。常见错误码为 400（参数）、403（来源或令牌）、404（读取资源不存在）、409（忙碌或版本冲突）、500（内部错误），响应体包含 `error`。
 

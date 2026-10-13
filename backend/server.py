@@ -76,7 +76,7 @@ def settings(body):
     if not count<=duration<=count*10: raise Invalid('每镜头需 1–10 秒，请调整总时长或镜头数')
     return dict(brief=brief,style=style,duration=duration,shot_count=count)
 
-def shots_valid(shots,p):
+def shots_valid(shots,p,*,match_total=True):
     if not isinstance(shots,list) or len(shots)!=p['shot_count']: raise Invalid('镜头数量不符')
     output=[]; ids=set()
     for i,s in enumerate(shots):
@@ -87,7 +87,7 @@ def shots_valid(shots,p):
         o={'id':sid,'duration':integer(s.get('duration'),1,10,'镜头时长'),'seed':integer(s.get('seed',20261013+i),0,2**53-1,'种子')}
         for k,limit in [('title',200),('description',2000),('camera',500),('prompt',6000),('negative',2000)]: o[k]=text(s.get(k,''),k,limit,k!='negative')
         output.append(o)
-    if sum(s['duration'] for s in output)!=p['duration']: raise Invalid('分镜时长之和必须等于总时长')
+    if match_total and sum(s['duration'] for s in output)!=p['duration']: raise Invalid('分镜时长之和必须等于总时长')
     return output
 
 def guard(p,body):
@@ -377,7 +377,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(p)
                 guard(p,body)
                 if action=='edit' and self.command=='PUT':
-                    p['shots']=shots_valid(body.get('shots'),p); p['title']=text(body.get('title',p['title']),'标题',200); p['revision']+=1; p.update(approved_revision=None,status='draft',video_url=None,error=None)
+                    edited_shots=shots_valid(body.get('shots'),p,match_total=False); edited_title=text(body.get('title',p['title']),'标题',200)
+                    p.update(shots=edited_shots,title=edited_title,duration=sum(shot['duration'] for shot in edited_shots)); p['revision']+=1; p.update(approved_revision=None,status='draft',video_url=None,error=None)
                 elif action=='confirm':
                     p['shots']=shots_valid(p['shots'],p); p.update(approved_revision=p['revision'],status='approved',error=None)
                 elif action=='render':
