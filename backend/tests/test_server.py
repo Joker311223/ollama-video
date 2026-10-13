@@ -11,6 +11,20 @@ class Tests(unittest.TestCase):
         with self.assertRaises(s.Invalid): s.settings({'brief':'故事','duration':20,'shot_count':1})
         with self.assertRaises(s.Invalid): s.settings({'brief':'故事','duration':True,'shot_count':1})
         self.assertEqual(s.settings({'brief':'故事','duration':20,'shot_count':2})['duration'],20)
+    def test_pacing_allocation(self):
+        self.assertEqual(s.settings({'brief':'故事','duration':100,'shot_count':12})['duration'],100)
+        values=[6,8,9,10,7,8,9,10,6,9,8,10]
+        shots=[{'duration':v} for v in values]
+        self.assertEqual(s.allocate_duration(shots,100),shots)
+        adjusted=s.allocate_duration([{'duration':v} for v in [3,5,7,9]*3],100)
+        self.assertEqual(sum(x['duration'] for x in adjusted),100)
+        self.assertGreater(adjusted[3]['duration'],adjusted[0]['duration'])
+        for count in range(1,13):
+            for total in range(count,count*10+1):
+                result=s.allocate_duration([{'duration':i%10+1} for i in range(count)],total)
+                self.assertEqual(sum(x['duration'] for x in result),total)
+                self.assertTrue(all(1<=x['duration']<=10 for x in result))
+
     def test_path_traversal(self):
         for pid in ['../secret','a/../../x','a'*31,'g'*32]:
             with self.assertRaises(s.Invalid): s.directory(pid)

@@ -90,6 +90,17 @@ def shots_valid(shots,p,*,match_total=True):
     if match_total and sum(s['duration'] for s in output)!=p['duration']: raise Invalid('分镜时长之和必须等于总时长')
     return output
 
+def allocate_duration(shots,total):
+    """Fit integer durations to the target while preserving the model's pacing."""
+    weights=[shot['duration'] for shot in shots]
+    if sum(weights)==total: return shots
+    targets=[value*total/sum(weights) for value in weights]
+    durations=[1]*len(shots)
+    for _ in range(total-len(shots)):
+        index=max((i for i,d in enumerate(durations) if d<10),key=lambda i:targets[i]-durations[i])
+        durations[index]+=1
+    return [dict(shot,duration=duration) for shot,duration in zip(shots,durations)]
+
 def guard(p,body):
     if p['status'] in BUSY: raise Conflict('任务正在运行，先取消再编辑')
     if body.get('revision')!=p['revision']: raise Conflict('项目已更新，请刷新后重试')
@@ -133,12 +144,13 @@ def plan(pid):
     except Exception: pass
     update(pid,progress={'message':'正在用本地模型编写文字分镜','shot_index':0,'shot_total':p['shot_count']})
     schema={'type':'object','properties':{'title':{'type':'string'},'shots':{'type':'array','minItems':p['shot_count'],'maxItems':p['shot_count'],'items':{'type':'object','properties':{k:{'type':'integer' if k=='duration' else 'string'} for k in ['title','description','camera','duration','prompt','negative']},'required':['title','description','camera','duration','prompt','negative']}}},'required':['title','shots']}
-    system='你是专业分镜导演。返回严格 JSON。标题、画面描述、镜头运动用中文；prompt 和 negative 用英文。每个 prompt 必须独立包含人物外观、环境、明确可见的主体和动作，重复同一人物的外观以保持一致。保留用户要求，不要将明确的鬼怪或主体改为空镜。每个镜头1到10秒整数，时长之和严格等于总时长，镜头数量必须精确。只输出分镜，不输出思考。面向 Wan2.2 视频模型，画幅为横向16:9。英文提示词只写自然画面描述，禁止 Midjourney 参数（--ar、--v 等）、Markdown、权重语法或用户未指定的其他比例。'
+    system='你是专业分镜导演。返回严格 JSON。标题、画面描述、镜头运动用中文；prompt 和 negative 用英文。每个 prompt 必须独立包含人物外观、环境、明确可见的主体和动作，重复同一人物的外观以保持一致。保留用户要求，不要将明确的鬼怪或主体改为空镜。根据每个镜头的叙事作用、动作复杂度和情绪节奏自由分配时长：交代或过渡镜头短一些，关键动作与情绪镜头长一些。不要默认平均分配，不要求总时长能被镜头数整除。每个镜头1到10秒整数，时长之和等于总时长，镜头数量必须精确。只输出分镜，不输出思考。面向 Wan2.2 视频模型，画幅为横向16:9。英文提示词只写自然画面描述，禁止 Midjourney 参数（--ar、--v 等）、Markdown、权重语法或用户未指定的其他比例。'
     try:
         result=request(OLLAMA+'/api/chat',{'model':MODEL,'stream':False,'think':False,'options':{'num_ctx':8192,'num_predict':3500},'format':schema,'keep_alive':'5m','messages':[{'role':'system','content':system},{'role':'user','content':json.dumps({k:p[k] for k in ['brief','style','duration','shot_count']},ensure_ascii=False)}]},timeout=600)
         check_cancel(pid)
         raw=json.loads(result['message']['content'])
-        shots=shots_valid(raw['shots'],p)
+        shots=allocate_duration(shots_valid(raw['shots'],p,match_total=False),p['duration'])
+        shots=shots_valid(shots,p)
         update(pid,title=text(raw['title'],'标题',200),shots=shots,status='draft',error=None,progress={'message':'分镜已完成，请编辑并确认','shot_index':0,'shot_total':len(shots)})
     finally:
         try: request(OLLAMA+'/api/generate',{'model':MODEL,'keep_alive':0},timeout=30)
