@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import UniformTypeIdentifiers
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKDownloadDelegate, WKUIDelegate {
     var window: NSWindow!
@@ -42,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 if let data = data, let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], json["app"] as? String == "jingxu-studio" {
-                    guard json["api_version"] as? Int == 2 else {
+                    guard json["api_version"] as? Int == 3 else {
                         self.failure("旧版后台服务仍在运行。请等待现有任务完成，并关闭旧版后台服务后再打开镜序；项目会保留。"); return
                     }
                     self.web.load(URLRequest(url: self.base)); return
@@ -75,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let process = Process(); process.executableURL = URL(fileURLWithPath: python)
         process.arguments = ["-u", resources.appendingPathComponent("backend/server.py").path]
         var env = ProcessInfo.processInfo.environment
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["STUDIO_PORT"] = "8765"; env["STUDIO_WORKSPACE"] = workspace
         env["STUDIO_DATA_DIR"] = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Movies/镜序").path
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -99,6 +101,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
         let panel = NSSavePanel(); panel.nameFieldStringValue = suggestedFilename
         panel.beginSheetModal(for: window) { result in completionHandler(result == .OK ? panel.url : nil) }
+    }
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.jpeg, .png, .webP]
+        panel.beginSheetModal(for: window) { result in
+            completionHandler(result == .OK ? panel.urls : nil)
+        }
     }
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
         let alert = NSAlert(); alert.messageText = message; alert.addButton(withTitle: "确认"); alert.addButton(withTitle: "取消")

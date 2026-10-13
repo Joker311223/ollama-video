@@ -6,7 +6,7 @@ from urllib.error import HTTPError, URLError
 
 BASE = 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks'
 CONFIG_DIR = Path(os.getenv('STUDIO_CONFIG_DIR', str(Path.home()/'Library/Application Support/镜序'))).expanduser()
-DEFAULTS = {'provider':'local', 'seedance_model':'doubao-seedance-2-5-260628', 'resolution':'720p'}
+DEFAULTS = {'provider':'local', 'seedance_model':'doubao-seedance-2-5-260628', 'resolution':'720p', 'seedream_model':'doubao-seedream-5-0-pro-260628'}
 LOCK = threading.RLock()
 
 class CloudError(Exception): pass
@@ -57,6 +57,8 @@ def save_preferences(body):
         if config['provider'] not in ('local','seedance'): raise CloudError('请选择有效的视频引擎。')
         if not isinstance(config['seedance_model'],str) or not re.fullmatch(r'(?:doubao-seedance-|ep-)[A-Za-z0-9-]{1,100}',config['seedance_model']):
             raise CloudError('请填写方舟 Seedance Model ID 或推理接入点 ID。')
+        if not isinstance(config['seedream_model'],str) or not re.fullmatch(r'(?:doubao-seedream-|ep-)[A-Za-z0-9-]{1,100}',config['seedream_model']):
+            raise CloudError('请填写方舟 Seedream 图片模型 ID 或推理接入点 ID。')
         if config['resolution'] not in ('720p','1080p'): raise CloudError('分辨率请选择 720p 或 1080p。')
         key = body.get('api_key','')
         if not isinstance(key,str) or len(key)>4096 or any(ord(c)<32 for c in key): raise CloudError('API Key 格式无效。')
@@ -105,7 +107,7 @@ def test_connection():
     call(api_key(),suffix='?page_size=1')
     return {'ok':True,'message':'API 鉴权通过；未创建视频任务。模型开通权限仍以实际生成为准。'}
 
-def payload(shot,config,style=''):
+def payload(shot,config,style='',first_frame=None):
     prompt=f"画面：{shot['description']}\n镜头运动：{shot['camera']}\n补充细节：{shot['prompt']}"
     if style: prompt+='\n风格：'+style
     if shot.get('negative'): prompt+='\n避免：'+shot['negative']
@@ -114,4 +116,22 @@ def payload(shot,config,style=''):
           'seed':shot['seed']%(2**32), 'watermark':False}
     # 1.0 has no audio parameter; all output is normalized to silent video locally.
     if not config['seedance_model'].startswith('doubao-seedance-1-0-'):body['generate_audio']=False
+    if first_frame:
+        body['content'].append({'type':'image_url','image_url':{'url':first_frame},'role':'first_frame'})
+        body['ratio']='adaptive'
+        body['content'][0]['text']+='\n保持首帧主体的脸型、发型、服装与道具一致。'
     return body
+
+
+def image_call(key,body):
+    """Synchronous image generation: never retry a potentially billable POST."""
+    req=Request('https://ark.cn-beijing.volces.com/api/v3/images/generations',data=json.dumps(body,ensure_ascii=False).encode(),method='POST',headers={'Content-Type':'application/json','Authorization':'Bearer '+key})
+    try:
+        with build_opener(NoRedirect()).open(req,timeout=300) as response:
+            return json.load(response)
+    except HTTPError as error:
+        if error.code>=500 or error.code==408:
+            raise CloudError('图片生成结果不确定，请在方舟控制台核对调用与费用，不会自动重试。') from None
+        raise Rejected(f'图片生成失败（HTTP {error.code}），请检查 Seedream 模型开通、额度及图片要求。') from None
+    except (URLError,TimeoutError,OSError,ValueError):
+        raise CloudError('图片生成连接中断，结果和费用可能已产生，请先在方舟控制台核对。') from None

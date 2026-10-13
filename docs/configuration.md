@@ -35,7 +35,9 @@ export STUDIO_WORKSPACE="/你的运行环境目录"
 
 ## 视频引擎与 API Key
 
-右上角可选择本地 Wan2.2 或 Seedance 云端；“引擎设置”支持 API Key、Model ID 和云端分辨率。详细步骤见 [Seedance 文档](seedance.md)。生成中禁止更改配置，每次生成保存一份不含密钥的配置快照。
+右上角可选择本地 Wan2.2 或 Seedance 云端；“引擎设置”支持 API Key、Seedance 视频 Model ID、Seedream 图片 Model ID 和云端视频分辨率。详细步骤见 [Seedance 文档](seedance.md)。图片或视频生成中禁止更改配置，每次生成保存一份不含密钥的配置快照。
+
+Seedream 默认图片模型为 `doubao-seedream-5-0-pro-260628`，与视频模型共用方舟钥匙串密钥，但需要独立开通图片模型权限。图片引擎与视频引擎独立，选择本地视频不代表 Seedream 图片生成免费或离线。
 
 ## 当前本地固定配置
 

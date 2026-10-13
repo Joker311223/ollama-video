@@ -46,6 +46,28 @@ class CloudTests(unittest.TestCase):
         self.assertLess(result['seed'],2**32)
         self.assertIn(self.shot['description'],result['content'][0]['text']);self.assertIn(self.shot['camera'],result['content'][0]['text'])
         self.assertEqual(c.payload(dict(self.shot,duration=9),self.config)['duration'],9)
+    def test_first_frame_payload(self):
+        frame='data:image/jpeg;base64,fixture'
+        result=c.payload(self.shot,self.config,first_frame=frame)
+        self.assertEqual(result['ratio'],'adaptive')
+        self.assertEqual(result['content'][1],{'type':'image_url','image_url':{'url':frame},'role':'first_frame'})
+        self.assertNotIn('reference_image',json.dumps(result))
+    def test_image_errors_are_safe_and_never_retried(self):
+        for code in [400,401,408,500]:
+            with patch.object(c,'build_opener') as opener:
+                opener.return_value.open.side_effect=HTTPError(c.BASE,code,'secret',{},io.BytesIO(b'secret'))
+                with self.assertRaises(c.CloudError) as result:c.image_call('secret',{})
+                self.assertNotIn('secret',str(result.exception))
+                self.assertEqual(isinstance(result.exception,c.Rejected),code in [400,401])
+                self.assertEqual(opener.return_value.open.call_count,1)
+    def test_image_request_uses_fixed_endpoint_without_redirect(self):
+        with patch.object(c,'build_opener') as opener:
+            opener.return_value.open.return_value.__enter__.return_value=io.BytesIO(b'{"data":[]}')
+            self.assertEqual(c.image_call('fixture',{'model':c.DEFAULTS['seedream_model']}),{'data':[]})
+            req=opener.return_value.open.call_args.args[0]
+            self.assertEqual(req.full_url,'https://ark.cn-beijing.volces.com/api/v3/images/generations')
+            self.assertEqual(req.method,'POST')
+            self.assertIsInstance(opener.call_args.args[0],c.NoRedirect)
     def test_signature_isolated_by_engine_model_resolution_and_edit(self):
         original=s.cloud_signature(self.shot,self.p)
         self.assertNotEqual(original,s.signature(self.shot))

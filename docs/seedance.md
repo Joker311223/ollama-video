@@ -6,7 +6,7 @@ title: Seedance 云端视频
 
 [文档首页](README.md) · [配置参考](configuration.md)
 
-镜序 0.2 可选择本地 Wan2.2 或火山方舟 Seedance 生成视频。文字分镜始终由本地 Ollama 生成；切换视频引擎不会自动创建视频任务。
+镜序 0.3 可选择本地 Wan2.2 或火山方舟 Seedance 生成视频。文字分镜始终由本地 Ollama 生成；切换视频引擎不会自动创建视频任务。
 
 ## 配置步骤
 
@@ -14,9 +14,11 @@ title: Seedance 云端视频
 2. 打开镜序右上角的“引擎设置”，输入 API Key，填写已开通的 Model ID 或推理接入点 ID。
 3. 选择 720p 或 1080p，点击“保存配置”。默认模型为 `doubao-seedance-2-5-260628`。
 4. 点击“测试已保存配置”。测试使用任务列表查询验证鉴权，不创建视频任务；成功不代表所有模型都已开通。
-5. 在右上角选择“Seedance 云端”。编辑并确认分镜后，点击带“计费”标记的生成按钮。
+5. 在右上角选择“Seedance 云端”。新项目准备并逐张确认分镜图片，再确认分镜后，点击带“计费”标记的生成按钮。
 
 已保存密钥不会回显；输入框留空表示保留原密钥，也可通过按钮删除。密钥由 macOS 钥匙串保存，不写入项目 JSON、普通设置文件或浏览器存储。首次访问钥匙串时，macOS 可能要求授权。
+
+图片生成使用独立的 Seedream 设置，默认 `doubao-seedream-5-0-pro-260628`。与 Seedance 共用 API Key，但需分别开通权限；只有明确点击 Seedream 生成才调用图片 API 并计费，也可全程上传已有图片。详见[角色与分镜图片](character-images.md)。
 
 本地生成仍使用原来的 ComfyUI 环境，不需要 API Key。Seedance 视频生成阶段不调用 ComfyUI，也不调用 Ollama 整理提示词，直接提交已确认的中文画面、镜头运动、英文补充描述、风格和负面描述。
 
@@ -33,7 +35,9 @@ title: Seedance 云端视频
 
 Seedance 2.5 的文生视频最短为 4 秒。为兼容现有短分镜，本版把少于 4 秒的镜头按 4 秒请求，再裁剪到分镜时长；费用基于实际请求，不能按裁剪后的成片秒数估算。接口限制见[方舟创建视频任务文档](https://docs.volcengine.com/docs/ark/create-video-generation-task-api?lang=zh)。
 
-选择其他 Model ID 或 `ep-` 接入点时，请自行确认支持文生视频、所选分辨率、4–10 秒请求及音频参数。模型开通情况和收费标准以方舟控制台为准。
+选择其他 Model ID 或 `ep-` 接入点时，请自行确认支持项目所需的图生视频（旧纯文字项目为文生视频）、所选分辨率、4–10 秒请求及音频参数。模型开通情况和收费标准以方舟控制台为准。
+
+真实人物参考图需要方舟官方可信素材授权；本应用暂不支持办理该授权。上传成功不代表素材已获云端授权。
 
 ## 任务重试与取消
 
@@ -47,7 +51,7 @@ Seedance 2.5 的文生视频最短为 4 秒。为兼容现有短分镜，本版�
 
 ## 配置存储与开发
 
-- 普通设置：`~/Library/Application Support/镜序/settings.json`，仅保存引擎、Model ID、分辨率。
+- 普通设置：`~/Library/Application Support/镜序/settings.json`，仅保存引擎、视频及图片 Model ID、分辨率。
 - 密钥：macOS 钥匙串，服务名称 `local.jingxu.storyboardstudio.ark`。
 - 项目：仍保存在 `~/Movies/镜序`，包含本次生成配置快照与云端任务 ID，不含 API Key。
 - 开发启动时可用 `STUDIO_CONFIG_DIR` 指定测试配置目录；可用 `STUDIO_KEYCHAIN_HELPER` 指定已构建的钥匙串组件。

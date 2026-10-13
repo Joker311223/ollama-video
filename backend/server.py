@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import seedance
+import visuals
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKSPACE = Path(os.getenv('STUDIO_WORKSPACE', str(ROOT)))
@@ -21,7 +22,7 @@ MODEL = 'qwen3.5:9b'
 LOCK = threading.RLock()
 GPU = threading.Lock()
 CANCEL = {}
-BUSY = {'planning', 'rendering'}
+BUSY = {'planning', 'rendering', 'imaging'}
 ID = re.compile(r'^[a-f0-9]{32}$')
 
 class Invalid(Exception): pass
@@ -47,14 +48,14 @@ def save(p):
 
 def load(pid):
     with LOCK:
-        try: return json.loads((directory(pid)/'project.json').read_text())
+        try: return decorate_project(json.loads((directory(pid)/'project.json').read_text()))
         except FileNotFoundError: raise Invalid('项目不存在')
 
 def projects():
     DATA.mkdir(parents=True,exist_ok=True)
     result=[]
     for f in DATA.glob('*/project.json'):
-        try: result.append(json.loads(f.read_text()))
+        try: result.append(decorate_project(json.loads(f.read_text())))
         except (ValueError,OSError): pass
     return sorted(result,key=lambda p:p.get('updated_at',''),reverse=True)
 
@@ -89,6 +90,9 @@ def shots_valid(shots,p,*,match_total=True):
         ids.add(sid)
         o={'id':sid,'duration':integer(s.get('duration'),1,10,'镜头时长'),'seed':integer(s.get('seed',20261013+i),0,2**53-1,'种子')}
         for k,limit in [('title',200),('description',2000),('camera',500),('prompt',6000),('negative',2000)]: o[k]=text(s.get(k,''),k,limit,k!='negative')
+        previous=next((x for x in p.get('shots',[]) if x.get('id')==sid),{})
+        for field in ('image_asset','image_fingerprint','image_source_fingerprint'):
+            if field in previous: o[field]=previous[field]
         output.append(o)
     if match_total and sum(s['duration'] for s in output)!=p['duration']: raise Invalid('分镜时长之和必须等于总时长')
     return output
@@ -109,7 +113,7 @@ def guard(p,body):
     if body.get('revision')!=p['revision']: raise Conflict('项目已更新，请刷新后重试')
 
 def signature(s):
-    return hashlib.sha256(json.dumps({'pipeline_version':2,**{k:s[k] for k in ['description','camera','prompt','negative','duration','seed']}},sort_keys=True).encode()).hexdigest()[:16]
+    return hashlib.sha256(json.dumps({'pipeline_version':2,**({'image_asset':s['image_asset']} if s.get('image_asset') else {}),**{k:s[k] for k in ['description','camera','prompt','negative','duration','seed']}},sort_keys=True).encode()).hexdigest()[:16]
 
 def update(pid,**fields):
     with LOCK:
@@ -289,6 +293,10 @@ def render_job(pid):
         if not dest.exists():
             update(pid,progress={'message':'正在生成镜头（含采样和解码，可能需要数分钟）','shot_index':index+1,'shot_total':len(p['shots']),'step':None,'steps':20})
             graph=build_graph(s,pid,compiled[signature(s)])
+            if p.get('visual_mode'):
+                image_name=upload_comfy_image(pid,s['image_asset'])
+                graph['90']={'class_type':'LoadImage','inputs':{'image':image_name}}
+                graph['55']['inputs']['start_image']=['90',0]
             queued=request(COMFY+'/prompt',{'prompt':graph,'client_id':'studio-'+pid},timeout=30)
             if queued.get('node_errors'): raise RuntimeError(str(queued['node_errors']))
             prompt_id=queued['prompt_id']; update(pid,active_prompt_id=prompt_id)
@@ -327,7 +335,7 @@ def render_configuration(body):
     if any(body.get(k)!=config[k] for k in ['seedance_model','resolution']):
         raise Conflict('Seedance 设置已变更，请刷新后重试。')
     seedance.api_key()
-    return {**config,'fps':24,'ratio':'16:9','generate_audio':False}
+    return {**{k:config[k] for k in ('provider','seedance_model','resolution')},'fps':24,'ratio':'16:9','generate_audio':False}
 
 def cloud_signature(shot,p):
     return hashlib.sha256(json.dumps({'pipeline_version':1,'shot':signature(shot),'config':p['render_config'],'style':p.get('style','')},sort_keys=True).encode()).hexdigest()[:24]
@@ -347,7 +355,7 @@ def cloud_task(pid,shot,p,key,index):
         record={'status':'submitting','requested_duration':max(4,shot['duration'])}
         cloud_record(pid,cache_key,record)
         try:
-            response=seedance.call(key,'POST',body=seedance.payload(shot,p['render_config'],p.get('style','')))
+            response=seedance.call(key,'POST',body=seedance.payload(shot,p['render_config'],p.get('style',''),first_frame=visuals.image_data_url(directory(pid),shot['image_asset']) if p.get('visual_mode') else None))
         except seedance.Rejected:
             cloud_record(pid,cache_key,{**record,'status':'rejected'})
             raise
@@ -426,9 +434,110 @@ def render_cloud(pid):
         paths.append(dest)
     finish_video(pid,p,paths)
 
+def decorate_project(p):
+    visuals.decorate(p)
+    folder=directory(p['id'])
+    for item in [p.get('character') or {},*p.get('shots',[])]:
+        if item.get('image_asset'):
+            try: visuals.asset_path(folder,item['image_asset'])
+            except visuals.VisualError:
+                item['image_url']=None
+                if 'image_current' in item: item['image_current']=False
+    p['images_ready']=bool(p.get('character',{}).get('image_url')) and bool(p.get('shots')) and all(x.get('image_current') for x in p.get('shots',[]))
+    return p
+
+def require_images(p):
+    if p.get('visual_mode') and not decorate_project(p)['images_ready']:
+        raise Conflict('请先准备并逐张确认当前分镜图片，再生成视频。')
+
+def invalidate_approval(p):
+    p.update(revision=p['revision']+1,approved_revision=None,status='draft',video_url=None,error=None)
+
+def visual_target(p,target):
+    if target=='character': return p.setdefault('character',{'name':'','appearance':''})
+    shot=next((x for x in p.get('shots',[]) if x['id']==target),None)
+    if shot is None: raise Invalid('图片目标不存在')
+    return shot
+
+def visual_request_signature(p,target,model):
+    item=visual_target(p,target)
+    content={k:item.get(k,'') for k in ('name','appearance')} if target=='character' else visuals.fingerprint(p,item)
+    return hashlib.sha256(json.dumps({'target':target,'content':content,'model':model},sort_keys=True).encode()).hexdigest()
+
+def attach_image(p,target,asset):
+    item=visual_target(p,target);item['image_asset']=asset
+    if target!='character':
+        item['image_source_fingerprint']=visuals.fingerprint(p,item)
+        item.pop('image_fingerprint',None)
+    invalidate_approval(p)
+
+def visual_action(p,action,body):
+    p['visual_mode']=True
+    if action=='character':
+        c=p.setdefault('character',{})
+        c.update(name=text(body.get('name',''),'角色名称',200,False),appearance=text(body.get('appearance',''),'角色外貌',2000,False))
+        invalidate_approval(p)
+    elif action=='image-upload':
+        target=body.get('target');visual_target(p,target)
+        asset=visuals.store_image(directory(p['id']),body.get('data_url'))['image_asset']
+        attach_image(p,target,asset)
+    elif action=='image-confirm':
+        if body.get('shot_id')=='character': raise Invalid('请选择分镜图片进行确认')
+        visuals.asset_path(directory(p['id']),p.get('character',{}).get('image_asset'))
+        shot=visual_target(p,body.get('shot_id'))
+        visuals.asset_path(directory(p['id']),shot.get('image_asset'))
+        current=visuals.fingerprint(p,shot)
+        shot['image_fingerprint']=current
+        invalidate_approval(p)
+    elif action=='image-generate':
+        target=body.get('target');item=visual_target(p,target)
+        config=seedance.preferences();model=config['seedream_model']
+        if body.get('seedream_model')!=model: raise Conflict('图片模型设置已变更，请刷新后重试。')
+        if not p.get('character',{}).get('appearance'): raise Invalid('请先填写角色外貌设定。')
+        if target!='character': visuals.asset_path(directory(p['id']),p.get('character',{}).get('image_asset'))
+        seedance.api_key()
+        fingerprint=visual_request_signature(p,target,model)
+        if p.get('image_requests',{}).get(fingerprint,{}).get('status')=='in_flight':
+            raise Conflict('上次图片请求结果不确定，请先到方舟控制台核对，避免重复计费。')
+        invalidate_approval(p)
+        p.update(status='imaging',error=None,progress={'message':'等待图片生成','shot_index':0,'shot_total':1})
+        p['image_job']={'target':target,'model':model,'fingerprint':fingerprint}
+        save(p);launch(p['id'],generate_image);return p
+    save(p);return p
+
+def generate_image(pid):
+    p=load(pid);job=p['image_job'];target=job['target'];fp=job['fingerprint']
+    check_cancel(pid)
+    body=visuals.seedream_payload(p,None if target=='character' else visual_target(p,target),job['model'],directory(pid))
+    key=seedance.api_key()
+    p.setdefault('image_requests',{})[fp]={'status':'in_flight'}
+    p['progress']={'message':'Seedream 正在生成图片','shot_index':1,'shot_total':1};save(p)
+    try: result=seedance.image_call(key,body)
+    except seedance.Rejected:
+        p['image_requests'][fp]={'status':'rejected'};save(p);raise
+    # Preserve a paid successful image even when cancellation arrived during HTTP.
+    asset=visuals.store_image(directory(pid),visuals.response_image(result))['image_asset']
+    attach_image(p,target,asset)
+    p['image_requests'][fp]={'status':'succeeded','image_asset':asset}
+    p['progress']={'message':'图片已保存，请检查并确认分镜图片','shot_index':1,'shot_total':1};save(p)
+    check_cancel(pid)
+
+def upload_comfy_image(pid,asset):
+    path=visuals.asset_path(directory(pid),asset)
+    boundary='studio-'+uuid.uuid4().hex
+    filename=pid+'-'+asset
+    data=(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{filename}"\r\nContent-Type: image/jpeg\r\n\r\n'.encode()+path.read_bytes()+f'\r\n--{boundary}--\r\n'.encode())
+    req=Request(COMFY+'/upload/image',data=data,headers={'Content-Type':'multipart/form-data; boundary='+boundary})
+    with urlopen(req,timeout=60) as response: result=json.load(response)
+    name=result.get('name');subfolder=result.get('subfolder','')
+    if not isinstance(name,str) or '/' in name or '\\' in name or '..' in name or not isinstance(subfolder,str) or '..' in subfolder or subfolder.startswith('/'):
+        raise Invalid('ComfyUI 图片上传返回路径无效')
+    return (subfolder+'/' if subfolder else '')+name
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
     def send_json(self,data,status=200):
+        if isinstance(data,dict) and 'shots' in data and 'id' in data: data=decorate_project(data)
         b=json.dumps(data,ensure_ascii=False).encode(); self.send_response(status); self.send_header('Content-Type','application/json; charset=utf-8'); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('Content-Length',str(len(b))); self.end_headers(); self.wfile.write(b)
     def origin_ok(self):
         host=self.headers.get('Host','')
@@ -439,7 +548,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self.origin_ok(): return self.send_json({'error':'来源无效'},403)
             path=unquote(urlparse(self.path).path)
-            if path=='/api/bootstrap': return self.send_json({'app':'jingxu-studio','api_version':2,'token':TOKEN,'projects':projects(),'preferences':seedance.public_preferences(),'settings':{'model':MODEL,'data_dir':str(DATA),'resolution':'512×288','fps':12,'max_shot_duration':10}})
+            if path=='/api/bootstrap': return self.send_json({'app':'jingxu-studio','api_version':3,'token':TOKEN,'projects':projects(),'preferences':seedance.public_preferences(),'settings':{'model':MODEL,'data_dir':str(DATA),'resolution':'512×288','fps':12,'max_shot_duration':10}})
             if path=='/api/preferences': return self.send_json(seedance.public_preferences())
             if path=='/api/projects': return self.send_json(projects())
             if path=='/api/health':
@@ -456,13 +565,14 @@ class Handler(BaseHTTPRequestHandler):
                 parts=path.split('/')
                 if len(parts)!=4: raise Invalid('路径无效')
                 folder=directory(parts[2]).resolve(); target=(folder/parts[3]).resolve()
+                if target.suffix=='.jpg': return self.serve_file(visuals.asset_path(folder,parts[3]),'image/jpeg')
                 if target.parent!=folder or target.suffix!='.mp4': raise Invalid('路径无效')
                 return self.serve_file(target,'video/mp4')
             target=(ROOT/'frontend'/('index.html' if path=='/' else path.lstrip('/'))).resolve()
             if not target.is_relative_to((ROOT/'frontend').resolve()): raise Invalid('路径无效')
             import mimetypes
             return self.serve_file(target,mimetypes.guess_type(target)[0] or 'application/octet-stream')
-        except (Invalid,FileNotFoundError): self.send_json({'error':'资源不存在'},404)
+        except (Invalid,visuals.VisualError,FileNotFoundError): self.send_json({'error':'资源不存在'},404)
         except (BrokenPipeError,ConnectionResetError): pass
         except Exception as e: self.send_json({'error':str(e)},500)
     def serve_file(self,path,ctype):
@@ -491,41 +601,46 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self.origin_ok() or not secrets.compare_digest(self.headers.get('X-Studio-Token',''),TOKEN): return self.send_json({'error':'请求未授权'},403)
             length=int(self.headers.get('Content-Length','0'))
-            if not 0<length<=200000: raise Invalid('请求大小无效')
+            if not 0<length<=(12*1024*1024 if urlparse(self.path).path.endswith('/image-upload') else 200000): raise Invalid('请求大小无效')
             body=json.loads(self.rfile.read(length))
             if not isinstance(body,dict): raise Invalid('请求格式无效')
             parts=urlparse(self.path).path.strip('/').split('/')
             with LOCK:
                 if parts==['api','preferences'] and self.command=='POST':
-                    if any(p['status']=='rendering' for p in projects()): raise Conflict('视频生成期间不能更改引擎或 API 设置。')
+                    if any(p['status'] in ('rendering','imaging') for p in projects()): raise Conflict('视频生成期间不能更改引擎或 API 设置。')
                     return self.send_json(seedance.save_preferences(body))
                 if parts==['api','preferences','test'] and self.command=='POST':
                     return self.send_json(seedance.test_connection())
                 if parts==['api','projects'] and self.command=='POST':
                     opts=settings(body); pid=uuid.uuid4().hex
-                    p=dict(id=pid,title='新的故事',revision=1,approved_revision=None,status='planning',shots=[],error=None,video_url=None,progress={'message':'等待本地模型','shot_index':0,'shot_total':opts['shot_count']},**opts)
+                    p=dict(id=pid,visual_mode=True,character={'name':'','appearance':''},title='新的故事',revision=1,approved_revision=None,status='planning',shots=[],error=None,video_url=None,progress={'message':'等待本地模型','shot_index':0,'shot_total':opts['shot_count']},**opts)
                     save(p); launch(pid,plan); return self.send_json(p,201)
                 if len(parts) not in [3,4] or parts[:2]!=['api','projects']: raise Invalid('接口不存在')
                 pid=parts[2]; p=load(pid); action=parts[3] if len(parts)==4 else 'edit'
                 if action=='cancel':
                     if p['status'] in BUSY:
-                        CANCEL.setdefault(pid,threading.Event()).set(); p['progress']['message']='正在停止；已运行的云端任务可能继续计费，可在方舟控制台查看' if p.get('render_config',{}).get('provider')=='seedance' and p['status']=='rendering' else '正在停止：当前镜头或分镜请求完成后停止'; save(p)
+                        CANCEL.setdefault(pid,threading.Event()).set(); p['progress']['message']='正在停止；云端图片请求可能完成并计费，收到的图片会保存' if p['status']=='imaging' else '正在停止；已运行的云端任务可能继续计费，可在方舟控制台查看' if p.get('render_config',{}).get('provider')=='seedance' and p['status']=='rendering' else '正在停止：当前镜头或分镜请求完成后停止'; save(p)
                     return self.send_json(p)
                 guard(p,body)
+                if action in ('character','image-upload','image-generate','image-confirm'):
+                    if self.command!='POST': raise Invalid('图片操作仅支持 POST')
+                    return self.send_json(visual_action(p,action,body))
                 if action=='edit' and self.command=='PUT':
                     edited_shots=shots_valid(body.get('shots'),p,match_total=False); edited_title=text(body.get('title',p['title']),'标题',200)
                     p.update(shots=edited_shots,title=edited_title,duration=sum(shot['duration'] for shot in edited_shots)); p['revision']+=1; p.update(approved_revision=None,status='draft',video_url=None,error=None)
                 elif action=='confirm':
+                    require_images(p)
                     p['shots']=shots_valid(p['shots'],p); p.update(approved_revision=p['revision'],status='approved',error=None)
                 elif action=='render':
                     if p['approved_revision']!=p['revision']: raise Conflict('请先确认当前版本的分镜')
+                    require_images(p)
                     config=render_configuration(body)
                     p['shots']=shots_valid(p['shots'],p); p.update(render_config=config,render_id=uuid.uuid4().hex,video_url=None); p.update(status='rendering',error=None,progress={'message':'等待视频引擎','shot_index':0,'shot_total':len(p['shots'])}); save(p); launch(pid,render); return self.send_json(p)
                 elif action=='replan':
                     p.update(settings(body)); p.update(revision=p['revision']+1,approved_revision=None,status='planning',shots=[],video_url=None,error=None,progress={'message':'等待本地模型','shot_index':0,'shot_total':p['shot_count']}); save(p); launch(pid,plan); return self.send_json(p)
                 else: raise Invalid('请求方法或操作无效')
                 save(p); return self.send_json(p)
-        except seedance.CloudError as e: self.send_json({'error':str(e)},400)
+        except (seedance.CloudError,visuals.VisualError) as e: self.send_json({'error':str(e)},400)
         except Conflict as e: self.send_json({'error':str(e)},409)
         except (Invalid,ValueError,KeyError) as e: self.send_json({'error':str(e)},400)
         except Exception as e: self.send_json({'error':str(e)},500)

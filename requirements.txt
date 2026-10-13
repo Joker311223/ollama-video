@@ -1,2 +1,3 @@
 # Additional backend dependency; install ComfyUI requirements separately.
 aiohttp>=3.9,<4
+Pillow>=10,<13

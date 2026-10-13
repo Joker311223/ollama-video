@@ -41,18 +41,22 @@ python3 build.py --workspace "$STUDIO_WORKSPACE"
 | --- | --- | --- |
 | GET | `/api/bootstrap` | 应用标识、令牌、项目和设置 |
 | GET | `/api/preferences` | 读取引擎配置，仅返回密钥是否配置 |
-| POST | `/api/preferences` | 保存 provider、seedance_model、resolution；可选 api_key 或 clear_key |
+| POST | `/api/preferences` | 保存 provider、seedance_model、seedream_model、resolution；可选 api_key 或 clear_key |
 | POST | `/api/preferences/test` | 测试已保存密钥的 API 鉴权，不创建视频任务 |
 | GET | `/api/health` | Ollama、ComfyUI、模型和 ffmpeg 状态 |
 | GET | `/api/projects` | 项目列表 |
 | GET | `/api/projects/{id}` | 单个项目及进度 |
 | POST | `/api/projects` | 创建项目并开始生成分镜 |
 | PUT | `/api/projects/{id}` | 保存标题与完整镜头列表 |
+| POST | `/api/projects/{id}/character` | 保存单主角 name、appearance，携带 revision |
+| POST | `/api/projects/{id}/image-upload` | 上传 data_url，target 为 character 或镜头 ID，携带 revision |
+| POST | `/api/projects/{id}/image-generate` | 显式启动 Seedream 计费图片任务，携带 revision、target、seedream_model |
+| POST | `/api/projects/{id}/image-confirm` | 确认现有分镜图适配当前文字，携带 revision、shot_id |
 | POST | `/api/projects/{id}/confirm` | 确认当前分镜版本 |
 | POST | `/api/projects/{id}/render` | 开始异步视频生成 |
 | POST | `/api/projects/{id}/cancel` | 请求停止 |
 | POST | `/api/projects/{id}/replan` | 使用新设置重新生成分镜 |
-| GET | `/media/{id}/{filename}.mp4` | 视频文件，支持单段 Range 请求 |
+| GET | `/media/{id}/{filename}` | 项目媒体；视频支持单段 Range 请求 |
 
 创建与重新规划字段示例（重新规划还需 `revision`）：
 
@@ -62,7 +66,7 @@ python3 build.py --workspace "$STUDIO_WORKSPACE"
 
 编辑传入 `revision`、`title` 和完整 `shots` 数组。镜头包含 `id`、`title`、`description`、`camera`、`prompt`、`negative`、`duration`、`seed`。镜头 ID 不重复，镜头数必须匹配项目设置；保存编辑时，总时长由后端按镜头时长自动求和，不要求匹配初始总时长。
 
-Seedance 渲染请求除了 `revision`，还需传入与当前设置一致的 `provider`、`seedance_model`、`resolution`，避免旧客户端意外选择付费引擎。bootstrap 包含 `api_version: 2` 和 `preferences`。
+Seedance 渲染请求除了 `revision`，还需传入与当前设置一致的 `provider`、`seedance_model`、`resolution`，避免旧客户端意外选择付费引擎。bootstrap 包含 `api_version` 和 `preferences`；以实际后端返回版本为准。
 
 创建返回 201；异步请求的成功响应只表示任务已启动，不表示视频已完成。轮询项目状态确认结果。常见错误码为 400（参数）、403（来源或令牌）、404（读取资源不存在）、409（忙碌或版本冲突）、500（内部错误），响应体包含 `error`。
 
@@ -71,6 +75,7 @@ Seedance 渲染请求除了 `revision`，还需传入与当前设置一致的 `p
 | 状态 | 含义 |
 | --- | --- |
 | `planning` | 正在生成文字分镜 |
+| `imaging` | 正在生成 Seedream 图片，锁定编辑与配置 |
 | `draft` | 分镜待编辑或确认 |
 | `approved` | 当前版本已确认 |
 | `rendering` | 正在生成并合成视频 |
@@ -80,3 +85,12 @@ Seedance 渲染请求除了 `revision`，还需传入与当前设置一致的 `p
 | `interrupted` | 后端重启时发现未完成任务 |
 
 只有 `approved_revision == revision` 才可渲染；编辑后递增版本并清除确认。客户端应展示服务器返回的状态，不能仅根据 HTTP 请求成功显示“生成完成”。
+
+
+## 图片绑定与版本
+
+新项目 `visual_mode: true`，旧项目默认 `false`。保存角色卡或上传图片会开启图片流程。项目包含 `character`（`name`、`appearance`、可选 `image_url` / `image_asset`），镜头包含 `image_url`、`image_asset`、`image_fingerprint` 和 `image_current`。`images_ready` 由服务端派生；图片模式下必须为真才能确认并渲染。
+
+上传 `data_url` 仅接受 JPEG / PNG / WebP，文件最大 8 MB，服务端验证并规范化为本地 JPEG。上传或生成后的分镜图需要显式 `/image-confirm`。角色或画面变化使相关确认失效；单纯时长改变保留图片确认，但更新视频版本。保存镜头时服务端保留图片绑定，不接受客户端伪造 `image_asset`。
+
+图片生成使用已保存的 Seedream 配置，与视频 provider 独立，不能在测试中自动调用真实计费 API。`render` 请求仍只携带视频配置字段；图片 Model ID 不属于视频配置快照参数。
